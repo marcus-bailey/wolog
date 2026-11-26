@@ -1,0 +1,672 @@
+<title>Wolog Logger Prototype</title>
+<!--
+  PROTOTYPE - throwaway. Answers "Prototype the logger and editor screens" (wolog issue 11).
+  Three variants of the logger, switchable with #a / #b / #c (or the bottom bar, or arrow keys):
+    A Sheet    - paper-log grid, Lines as rows and Sets as cells; Routine switch in the header; bottom tabs.
+    B Focus    - one Line at a time with big steppers; menu drawer; switch only on the Routines screen.
+    C Timeline - today card on top of a history feed; Lines expand inline; switch is a header chip.
+  History and the Routine editor are shared rough screens. State is in memory only; reload resets it.
+-->
+<style>
+:root {
+  --bg: #eef0f3; --surface: #ffffff; --sunk: #f5f6f8; --fg: #1a1d23; --muted: #5f6775; --line: #d5d9e0;
+  --accent: #2b59c3; --accent-soft: #e4ebfa; --rec: #1d7a52; --rec-soft: #e1f3e9; --warm: #9a5b00; --warm-soft: #fbeedb;
+  --danger: #b3261e; --bar: #111318; --bar-fg: #f2f3f5;
+  --font: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f1115; --surface: #191c22; --sunk: #14171c; --fg: #e7e9ee; --muted: #9aa2b1; --line: #2e333d;
+  --accent: #7ea2ef; --accent-soft: #1d2840; --rec: #5cc794; --rec-soft: #15301f; --warm: #e3a54a; --warm-soft: #33270f;
+  --danger: #f08a80; --bar: #e7e9ee; --bar-fg: #111318; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0f1115; --surface: #191c22; --sunk: #14171c; --fg: #e7e9ee; --muted: #9aa2b1; --line: #2e333d;
+  --accent: #7ea2ef; --accent-soft: #1d2840; --rec: #5cc794; --rec-soft: #15301f; --warm: #e3a54a; --warm-soft: #33270f;
+  --danger: #f08a80; --bar: #e7e9ee; --bar-fg: #111318; color-scheme: dark; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 15px; line-height: 1.4; }
+* { box-sizing: border-box; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.frame { max-width: 430px; margin: 0 auto; height: calc(100% - 60px); background: var(--surface);
+  border-left: 1px solid var(--line); border-right: 1px solid var(--line); position: relative; overflow: hidden; }
+.app { height: 100%; display: flex; flex-direction: column; }
+.scroll { flex: 1; overflow-y: auto; overflow-x: hidden; }
+.pad { padding: 14px 16px 24px; display: grid; gap: 12px; }
+h2 { font-size: 1.15rem; margin: 0; } h3 { font-size: 1rem; margin: 8px 0 0; }
+p { margin: 0; }
+.muted { color: var(--muted); font-size: 13px; }
+.note { color: var(--muted); font-size: 12px; }
+.grow { flex: 1; min-width: 0; }
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 7px 12px; }
+.btn.sm { padding: 4px 9px; font-size: 13px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); font-weight: 600; }
+.btn.danger { color: var(--danger); }
+.btn.big { width: 100%; padding: 14px; font-size: 17px; border-radius: 12px; }
+.btn:disabled { opacity: .45; cursor: default; }
+.link { background: none; border: 0; padding: 0; color: var(--accent); text-align: left; font-weight: 600; }
+.ic { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; width: 30px; height: 30px; padding: 0; }
+.chip { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; border-radius: 4px; padding: 2px 6px; background: var(--accent-soft); color: var(--accent); }
+.chip.session { background: var(--rec-soft); color: var(--rec); }
+.chip.skip { background: transparent; color: var(--rec); outline: 1px dashed var(--rec); }
+.chip.eng { background: var(--rec-soft); color: var(--rec); }
+.row-btns { display: flex; gap: 8px; align-items: center; }
+.row-btns.wrap { flex-wrap: wrap; }
+.inline { display: flex; gap: 8px; }
+.inline input, .inline select, .exin input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; background: var(--surface); }
+.exin { display: flex; gap: 8px; }
+.check { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
+input[type=text], input:not([type]) { background: var(--surface); }
+
+/* shared: last-time */
+.lt { background: var(--sunk); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; font-size: 13px; }
+.lt.none { color: var(--muted); font-style: italic; }
+.lt-h { color: var(--muted); font-size: 12px; }
+.lt-g { display: flex; flex-wrap: wrap; gap: 4px 10px; font-family: var(--mono); }
+.lt-s.wu { color: var(--warm); }
+.lt-s i { font-family: var(--font); color: var(--muted); }
+.lt-btn { width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.lt-list { display: grid; gap: 3px; font-family: var(--mono); }
+.lt-list .lt-s i { display: block; padding-left: 14px; font-size: 12px; }
+.lt-more { color: var(--accent); font-weight: 600; }
+.nm { color: var(--accent); font-size: 8px; margin-left: 2px; }
+.b-eng { display: grid; gap: 2px; padding: 12px 8px 4px; border-top: 1px solid var(--line); margin-top: 8px; }
+.b-eng button { font-size: 15px !important; padding: 8px !important; }
+
+/* shared: sheet */
+.scrim { position: absolute; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: flex-end; z-index: 20; }
+.sheet { background: var(--surface); width: 100%; border-radius: 16px 16px 0 0; padding: 16px; display: grid; gap: 12px; }
+.sheet-h { display: flex; justify-content: space-between; align-items: baseline; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.fields label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.fields input { font-size: 22px; font-family: var(--mono); padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; width: 100%; color: var(--fg); }
+.note-in { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%; }
+
+/* shared: history + editors */
+.hist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.hist li { display: flex; }
+.h-sess, .h-skip { width: 100%; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; align-items: center; text-align: left; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.h-skip { background: transparent; border-style: dashed; }
+.h-sess .date, .h-skip .date { grid-row: span 2; font-family: var(--mono); font-size: 12px; color: var(--muted); width: 74px; }
+.rlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.rlist li { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.rlist li.sel { border-color: var(--accent); }
+.rlist li .link { flex: 1; }
+.redit { display: grid; gap: 10px; border-top: 1px solid var(--line); padding-top: 10px; }
+.turns, .dlines { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.turns li, .dlines li { display: flex; gap: 6px; align-items: center; padding: 4px 6px; border-radius: 6px; background: var(--sunk); }
+.turns li.next { outline: 2px solid var(--accent); }
+.tn { font-family: var(--mono); color: var(--muted); width: 18px; text-align: right; }
+.dcard { border: 1px solid var(--line); border-radius: 8px; }
+.dhead { display: flex; gap: 8px; align-items: center; padding: 8px 10px; }
+.dbody { padding: 0 10px 10px; display: grid; gap: 8px; }
+
+/* ---------- A: Sheet ---------- */
+.a-bar { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); position: relative; }
+.a-rsw { border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; background: var(--sunk); font-weight: 700; }
+.a-menu { position: absolute; top: 46px; left: 12px; z-index: 10; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,.18); padding: 6px; display: grid; min-width: 200px; }
+.a-menu button { text-align: left; border: 0; background: none; padding: 8px 10px; border-radius: 6px; }
+.a-menu button:hover { background: var(--sunk); }
+.a-banner { margin: 12px 16px 0; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); display: grid; gap: 8px; }
+.a-banner.started { background: var(--rec-soft); }
+.a-banner select { border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--surface); }
+.a-grid { margin: 12px 0 0; display: grid; }
+.a-row { border-top: 1px solid var(--line); padding: 8px 0 8px 16px; display: grid; gap: 4px; }
+.a-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.a-name { flex: 0 0 108px; font-weight: 600; font-size: 14px; line-height: 1.2; }
+.a-cells { display: flex; gap: 6px; overflow-x: auto; padding-right: 16px; flex: 1; min-width: 0; }
+.cell { flex: 0 0 auto; min-width: 58px; height: 46px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-family: var(--mono); font-size: 14px; display: grid; place-items: center; line-height: 1.1; }
+.cell small { color: var(--muted); font-size: 11px; }
+.cell.wu { background: var(--warm-soft); border-color: var(--warm); }
+.cell.add { border-style: dashed; color: var(--accent); font-size: 20px; min-width: 46px; }
+.a-lt { font-size: 12px; color: var(--muted); font-family: var(--mono); padding-right: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.a-lt .wu { color: var(--warm); }
+.a-lineed { display: flex; gap: 4px; }
+.tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); }
+.tabs button { border: 0; background: none; padding: 12px 0; font-weight: 600; color: var(--muted); }
+.tabs button.on { color: var(--accent); box-shadow: inset 0 3px 0 var(--accent); }
+
+/* ---------- B: Focus ---------- */
+.b-bar { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.b-drawer { position: absolute; inset: 0; z-index: 15; background: rgba(0,0,0,.35); }
+.b-drawer nav { background: var(--surface); width: 70%; height: 100%; padding: 20px 16px; display: grid; align-content: start; gap: 4px; }
+.b-drawer nav button { text-align: left; border: 0; background: none; padding: 12px 8px; font-size: 17px; border-radius: 8px; }
+.b-drawer nav button.on { background: var(--accent-soft); color: var(--accent); }
+.b-today { margin: 24px 16px; padding: 24px 20px; border-radius: 18px; background: var(--accent-soft); display: grid; gap: 14px; text-align: center; }
+.b-today .big { font-size: 40px; font-weight: 800; letter-spacing: -.02em; }
+.b-days { display: grid; gap: 6px; }
+.b-chips { display: flex; gap: 6px; overflow-x: auto; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.b-chip { flex: 0 0 auto; border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; background: var(--surface); font-size: 13px; white-space: nowrap; }
+.b-chip.on { background: var(--fg); color: var(--surface); border-color: var(--fg); }
+.b-chip .n { font-family: var(--mono); margin-left: 4px; opacity: .7; }
+.b-ex { font-size: 26px; font-weight: 800; letter-spacing: -.01em; }
+.b-sets { display: flex; flex-wrap: wrap; gap: 6px; }
+.b-set { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-family: var(--mono); background: var(--surface); }
+.b-set.wu { background: var(--warm-soft); border-color: var(--warm); }
+.stepper { display: grid; grid-template-columns: 64px 1fr 64px; gap: 8px; align-items: center; }
+.stepper button { height: 56px; border-radius: 12px; border: 1px solid var(--line); background: var(--sunk); font-size: 18px; font-weight: 700; }
+.stepper input { height: 56px; text-align: center; font-size: 30px; font-family: var(--mono); font-weight: 700; border: 1px solid var(--line); border-radius: 12px; width: 100%; min-width: 0; background: var(--surface); }
+.stepper .lab { grid-column: 1 / -1; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.b-nav { display: flex; justify-content: space-between; }
+
+/* ---------- C: Timeline ---------- */
+.c-bar { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); position: relative; }
+.c-card { margin: 12px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.c-head { padding: 12px 14px; display: grid; gap: 8px; background: var(--sunk); }
+.c-ring { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.c-turn { border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; background: var(--surface); font-size: 13px; display: grid; text-align: left; line-height: 1.15; }
+.c-turn small { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.c-turn.cur { border-style: dashed; }
+.c-turn.pin { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent); }
+.c-line { border-top: 1px solid var(--line); }
+.c-lhead { width: 100%; display: flex; gap: 8px; align-items: baseline; padding: 10px 14px; border: 0; background: none; text-align: left; }
+.c-lhead .sum { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.c-open { padding: 0 14px 12px; display: grid; gap: 8px; }
+.c-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.c-col { display: grid; gap: 4px; align-content: start; font-family: var(--mono); font-size: 13px; }
+.c-col .h { font-family: var(--font); font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.c-col button { text-align: left; border: 1px solid var(--line); border-radius: 6px; padding: 3px 7px; background: var(--surface); font-family: var(--mono); }
+.c-col .wu { color: var(--warm); }
+.c-quick { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 6px; align-items: center; }
+.c-quick input { border: 1px solid var(--line); border-radius: 8px; padding: 8px; font-family: var(--mono); font-size: 16px; width: 100%; min-width: 0; }
+.c-quick .w { border: 1px solid var(--line); border-radius: 8px; padding: 8px 9px; background: var(--surface); font-weight: 700; }
+.c-quick .w.on { background: var(--warm-soft); border-color: var(--warm); color: var(--warm); }
+.c-feed { padding: 4px 12px 24px; display: grid; gap: 6px; }
+.c-feed h3 { margin: 6px 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+
+/* ---------- prototype chrome ---------- */
+.switcher { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 50; display: flex; align-items: center; gap: 4px;
+  background: var(--bar); color: var(--bar-fg); border-radius: 999px; padding: 5px; box-shadow: 0 6px 24px rgba(0,0,0,.35); font-size: 13px; white-space: nowrap; }
+.switcher button { background: none; border: 0; color: inherit; padding: 6px 10px; border-radius: 999px; }
+.switcher button:hover { background: rgba(127,127,127,.25); }
+.switcher .lbl { padding: 0 8px; font-weight: 700; min-width: 108px; text-align: center; }
+.statepanel { position: fixed; right: 12px; bottom: 60px; z-index: 49; width: min(380px, calc(100% - 24px)); max-height: 60%; overflow: auto;
+  background: var(--bar); color: var(--bar-fg); border-radius: 10px; padding: 10px; font: 11px/1.4 var(--mono); }
+.statepanel pre { margin: 0; white-space: pre-wrap; }
+.toast { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 60; background: var(--bar); color: var(--bar-fg); padding: 8px 14px; border-radius: 10px; font-size: 13px; max-width: min(400px, calc(100% - 32px)); }
+</style>
+
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+<script>
+const { useState, useReducer, useEffect, useMemo, Fragment } = React;
+const html = htm.bind(React.createElement);
+
+/* ---------- utils ---------- */
+const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const today = () => iso(new Date());
+const daysAgo = n => { const d = new Date(); d.setDate(d.getDate() - n); return iso(d); };
+const fmtDate = s => new Date(s + 'T12:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+const relDays = s => { const n = Math.round((new Date(today() + 'T12:00') - new Date(s + 'T12:00')) / 864e5); return n === 0 ? 'today' : n === 1 ? 'yesterday' : n + ' days ago'; };
+let _id = 1000; const nid = p => p + (++_id);
+const norm = t => (t || '').trim().replace(/\s+/g, ' ');
+const key = t => t.toLowerCase();
+const move = (arr, i, dir) => { const j = i + dir; if (i < 0 || j < 0 || j >= arr.length) return; [arr[i], arr[j]] = [arr[j], arr[i]]; };
+const R = (s, id) => s.routines.find(r => r.id === id);
+const D = (s, id) => s.days.find(d => d.id === id);
+const EX = (s, id) => s.exercises.find(e => e.id === id);
+const setCount = x => x.lines.reduce((a, l) => a + l.sets.length, 0);
+
+/* ---------- seed ---------- */
+function seed() {
+  const names = ['Bench Press', 'Incline DB Press', 'Overhead Press', 'Triceps Pushdown', 'Lateral Raise', 'Barbell Row', 'Pull-up', 'Lat Pulldown', 'Barbell Curl', 'Back Squat', 'Romanian Deadlift', 'Leg Press', 'Lying Leg Curl', 'Standing Calf Raise'];
+  const exercises = names.map((name, i) => ({ id: 'e' + i, name, retired: false }));
+  exercises.push({ id: 'e99', name: 'Smith Squat', retired: true });
+  const E = n => exercises.find(e => e.name === n).id;
+  const L = ns => ns.map(n => ({ id: nid('dl'), exId: E(n) }));
+  const days = [
+    { id: 'd1', routineId: 'r1', name: 'Push', lines: L(['Bench Press', 'Incline DB Press', 'Overhead Press', 'Triceps Pushdown', 'Lateral Raise']) },
+    { id: 'd2', routineId: 'r1', name: 'Pull', lines: L(['Barbell Row', 'Pull-up', 'Lat Pulldown', 'Barbell Curl']) },
+    { id: 'd3', routineId: 'r1', name: 'Legs', lines: L(['Back Squat', 'Romanian Deadlift', 'Leg Press', 'Lying Leg Curl', 'Standing Calf Raise']) },
+    { id: 'd4', routineId: 'r1', name: 'Deload Full Body', lines: L(['Back Squat', 'Bench Press', 'Barbell Row']) },
+    { id: 'd5', routineId: 'r2', name: 'Upper', lines: L(['Bench Press', 'Barbell Row', 'Overhead Press', 'Pull-up']) },
+    { id: 'd6', routineId: 'r2', name: 'Lower', lines: L(['Back Squat', 'Romanian Deadlift', 'Standing Calf Raise']) },
+  ];
+  const routines = [
+    { id: 'r1', name: 'PPL', turns: [{ id: 't1', dayId: 'd1' }, { id: 't2', dayId: 'd2' }, { id: 't3', dayId: 'd1' }, { id: 't4', dayId: 'd3' }] },
+    { id: 'r2', name: 'Upper/Lower', turns: [{ id: 't5', dayId: 'd5' }, { id: 't6', dayId: 'd6' }] },
+  ];
+  const P = spec => spec.split(',').map(t => { const [a, note] = t.split(':'); const w = a.endsWith('w'); const [wt, r] = a.replace('w', '').split('x'); return { id: nid('s'), weight: +wt, reps: +r, warmup: w, note: note || '' }; });
+  const S = (date, routineId, dayId, turnId, lines) => ({ id: nid('ss'), date, routineId, dayId, turnId, lines: lines.map(([n, spec]) => ({ id: nid('sl'), exId: E(n), sets: spec ? P(spec) : [] })) });
+  const sessions = [
+    S(daysAgo(31), 'r2', 'd5', 't5', [['Bench Press', '95x10w,145x8,145x8,145x7'], ['Barbell Row', '135x10,135x10'], ['Overhead Press', '85x8,85x8'], ['Pull-up', '0x8,0x7']]),
+    S(daysAgo(10), 'r1', 'd1', 't1', [['Bench Press', '95x10w,150x8,150x8,150x6'], ['Incline DB Press', '50x10,50x9,50x8'], ['Overhead Press', '85x8,85x7'], ['Triceps Pushdown', '50x12,50x12'], ['Lateral Raise', '15x15,15x14']]),
+    S(daysAgo(8), 'r1', 'd2', 't2', [['Barbell Row', '135x10,145x8,145x8'], ['Pull-up', '0x8,0x7,0x6'], ['Lat Pulldown', '120x10,120x10'], ['Barbell Curl', '60x10,60x9']]),
+    S(daysAgo(5), 'r1', 'd3', 't4', [['Back Squat', '135x5w,205x5,205x5,205x5'], ['Romanian Deadlift', '155x8,155x8'], ['Leg Press', '270x10,270x10'], ['Lying Leg Curl', '90x10,90x10'], ['Standing Calf Raise', '180x12,180x12']]),
+    S(daysAgo(3), 'r1', 'd1', 't1', [['Bench Press', '95x10w,135x5w,155x8,155x7:paused first rep,155x6'], ['Incline DB Press', '55x9,55x8,50x10'], ['Overhead Press', '85x8,90x6'], ['Triceps Pushdown', '55x12,55x10'], ['Lateral Raise', '15x15,17.5x12']]),
+    S(daysAgo(2), 'r1', 'd2', 't2', [['Barbell Row', '145x8,145x8,145x8'], ['Pull-up', '0x8,0x8,0x6'], ['Lat Pulldown', '125x10,125x9'], ['Barbell Curl', '60x10,65x8']]),
+  ];
+  const skips = [{ id: 'k1', date: daysAgo(7), routineId: 'r1', turnId: 't3', dayId: 'd1' }];
+  return { exercises, days, routines, sessions, skips, engagedId: 'r1', viewDate: today(), draft: null, flash: null, flashN: 0 };
+}
+
+/* ---------- decided rules ---------- */
+// Cursor: latest Session then later Skips on this Routine; walk back past any whose Turn is gone.
+function cursorIdx(s, r) {
+  const items = [
+    ...s.sessions.filter(x => x.routineId === r.id).map(x => ({ date: x.date, ord: -1, turnId: x.turnId })),
+    ...s.skips.map((x, i) => ({ ...x, ord: i })).filter(x => x.routineId === r.id).map(x => ({ date: x.date, ord: x.ord, turnId: x.turnId })),
+  ].sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : b.ord - a.ord);
+  for (const it of items) { const i = r.turns.findIndex(t => t.id === it.turnId); if (i >= 0) return i; }
+  return -1;
+}
+const suggestedTurn = (s, r) => r && r.turns.length ? r.turns[(cursorIdx(s, r) + 1) % r.turns.length] : null;
+// Picking a Day pins that Day's first Turn going forward from the cursor.
+function pinTurn(s, r, dayId) {
+  const n = r.turns.length, c = cursorIdx(s, r);
+  for (let k = 1; k <= n; k++) { const t = r.turns[((c + k) % n + n) % n]; if (t.dayId === dayId) return t; }
+  return null;
+}
+const turnLabel = (r, turnId) => { const i = r.turns.findIndex(t => t.id === turnId); return i < 0 ? 'no Turn' : `Turn ${i + 1} of ${r.turns.length}`; };
+// Last-time: same Exercise, latest Session strictly before this date that has a Set of it.
+function lastTime(s, exId, before) {
+  const prior = s.sessions.filter(x => x.date < before).sort((a, b) => a.date < b.date ? 1 : -1);
+  for (const x of prior) { const groups = x.lines.filter(l => l.exId === exId && l.sets.length).map(l => l.sets); if (groups.length) return { date: x.date, groups }; }
+  return null;
+}
+// Prefill: previous Set on this Line, else last-time's first Working Set (else its first Set), else empty.
+function prefill(s, line, date) {
+  if (line.sets.length) { const p = line.sets[line.sets.length - 1]; return { reps: p.reps, weight: p.weight }; }
+  const lt = lastTime(s, line.exId, date); if (!lt) return { reps: '', weight: '' };
+  const all = lt.groups.flat(); const w = all.find(x => !x.warmup) || all[0]; return { reps: w.reps, weight: w.weight };
+}
+function currentDraft(s) {
+  if (s.draft && s.draft.date === s.viewDate) return s.draft;
+  const sug = suggestedTurn(s, R(s, s.engagedId));
+  if (!sug) return { date: s.viewDate, dayId: null, lines: [] };
+  return { date: s.viewDate, dayId: sug.dayId, lines: D(s, sug.dayId).lines.map(l => ({ id: 'dr-' + l.id, exId: l.exId, sets: [] })) };
+}
+function useLog(s) {
+  const date = s.viewDate, session = s.sessions.find(x => x.date === date);
+  if (session) { const r = R(s, session.routineId); return { date, session, routine: r, day: D(s, session.dayId), lines: session.lines, started: true, turnText: turnLabel(r, session.turnId) }; }
+  const r = R(s, s.engagedId), sug = suggestedTurn(s, r), d = currentDraft(s);
+  const pin = d.dayId ? pinTurn(s, r, d.dayId) : null;
+  return { date, session: null, routine: r, sug, day: d.dayId && D(s, d.dayId), lines: d.lines, started: false, overridden: !!(sug && d.dayId !== sug.dayId),
+    pin, turnText: pin ? turnLabel(r, pin.id) : '', todaySkips: s.skips.filter(k => k.date === date && k.routineId === r.id), canSkip: date === today() && !!sug };
+}
+function resolveEx(s, name) {
+  const n = norm(name); if (!n) { s.flash = 'An Exercise needs a name.'; return null; }
+  const m = s.exercises.find(e => key(e.name) === key(n));
+  if (m && m.retired) { s.flash = `${m.name} is Retired. Un-retire it in the library to use it.`; return null; }
+  if (m) return m.id;
+  const id = nid('e'); s.exercises.push({ id, name: n, retired: false }); s.flash = `Created Exercise "${n}".`; return id;
+}
+function badSet(f) {
+  if (!(Number.isInteger(+f.reps) && +f.reps > 0)) return 'Reps must be a positive whole number.';
+  if (f.weight === '' || !(+f.weight >= 0)) return 'Weight must be 0 or more.';
+  return null;
+}
+
+/* ---------- reducer ---------- */
+function reducer(state, a) {
+  if (a.type === 'RESET') return seed();
+  const s = structuredClone(state); s.flash = null;
+  const r = R(s, s.engagedId);
+  const sess = s.sessions.find(x => x.date === s.viewDate);
+  const host = () => { if (sess) return sess; if (!(s.draft && s.draft.date === s.viewDate)) s.draft = structuredClone(currentDraft(s)); return s.draft; };
+  switch (a.type) {
+    case 'VIEW': s.viewDate = a.date; s.draft = null; break;
+    case 'PICK_DAY': { const d = D(s, a.dayId); s.draft = { date: s.viewDate, dayId: d.id, lines: d.lines.map(l => ({ id: nid('dr'), exId: l.exId, sets: [] })) }; break; }
+    case 'ADD_SET': {
+      const err = badSet(a.set); if (err) { s.flash = err; break; }
+      const set = { id: nid('s'), reps: +a.set.reps, weight: +a.set.weight, warmup: !!a.set.warmup, note: norm(a.set.note) };
+      if (sess) { sess.lines.find(l => l.id === a.lineId).sets.push(set); break; }
+      const d = currentDraft(s); if (!d.dayId) break;
+      const turn = pinTurn(s, r, d.dayId);
+      const replaced = s.skips.filter(k => k.date === s.viewDate && k.routineId === r.id).length;
+      s.skips = s.skips.filter(k => !(k.date === s.viewDate && k.routineId === r.id));
+      s.sessions.push({ id: nid('ss'), date: s.viewDate, routineId: r.id, dayId: d.dayId, turnId: turn ? turn.id : null, lines: d.lines.map(l => ({ ...l, sets: l.id === a.lineId ? [set] : [] })) });
+      s.draft = null;
+      s.flash = `Session started. ${D(s, d.dayId).name}'s Lines copied (Snapshot), pinned ${turn ? turnLabel(r, turn.id) : 'no Turn'}.` + (replaced ? ` Replaced ${replaced} Skip(s) on this date.` : '');
+      break;
+    }
+    case 'UPDATE_SET': { const err = badSet(a.set); if (err) { s.flash = err; break; } const st = sess.lines.find(l => l.id === a.lineId).sets.find(x => x.id === a.setId); Object.assign(st, { reps: +a.set.reps, weight: +a.set.weight, warmup: !!a.set.warmup, note: norm(a.set.note) }); break; }
+    case 'DELETE_SET': { const l = sess.lines.find(l => l.id === a.lineId); l.sets = l.sets.filter(x => x.id !== a.setId); if (!setCount(sess)) { s.sessions = s.sessions.filter(x => x !== sess); s.flash = 'Last Set deleted, so the Session is gone. Skips are not restored.'; } break; }
+    case 'ADD_LINE': { const id = resolveEx(s, a.name); if (id) host().lines.push({ id: nid('sl'), exId: id, sets: [] }); break; }
+    case 'REMOVE_LINE': { const h = host(); const l = h.lines.find(l => l.id === a.lineId); if (l.sets.length) { s.flash = 'A Line with Sets cannot be removed. Delete its Sets first.'; break; } h.lines = h.lines.filter(x => x !== l); break; }
+    case 'MOVE_LINE': { const h = host(); move(h.lines, h.lines.findIndex(l => l.id === a.lineId), a.dir); break; }
+    case 'SKIP': { const t = suggestedTurn(s, r); if (!t || sess) break; s.skips.push({ id: nid('k'), date: s.viewDate, routineId: r.id, turnId: t.id, dayId: t.dayId }); s.draft = null; s.flash = `Skipped ${D(s, t.dayId).name} (${turnLabel(r, t.id)}).`; break; }
+    case 'UNDO_SKIP': { const mine = s.skips.filter(k => k.routineId === r.id); const last = mine[mine.length - 1]; if (last) { s.skips = s.skips.filter(k => k !== last); s.flash = 'Last Skip undone.'; } s.draft = null; break; }
+    case 'ENGAGE': s.engagedId = a.routineId; s.draft = null; s.flash = `Engaged ${R(s, a.routineId).name}. New Sessions and Skips go here.`; break;
+    case 'ROUTINE_NEW': { const n = norm(a.name); if (!n) break; if (s.routines.some(x => key(x.name) === key(n))) { s.flash = 'A Routine with that name already exists.'; break; } s.routines.push({ id: nid('r'), name: n, turns: [] }); break; }
+    case 'DAY_NEW': { const n = norm(a.name); if (!n) break; if (s.days.some(d => d.routineId === a.routineId && key(d.name) === key(n))) { s.flash = 'This Routine already has a Day with that name.'; break; } const id = nid('d'); s.days.push({ id, routineId: a.routineId, name: n, lines: [] }); R(s, a.routineId).turns.push({ id: nid('t'), dayId: id }); break; }
+    case 'DAY_DUP': { const src = D(s, a.dayId); let n = src.name + ' copy', i = 2; while (s.days.some(d => d.routineId === a.routineId && key(d.name) === key(n))) n = src.name + ' copy ' + (i++); const id = nid('d'); s.days.push({ id, routineId: a.routineId, name: n, lines: src.lines.map(l => ({ id: nid('dl'), exId: l.exId })) }); R(s, a.routineId).turns.push({ id: nid('t'), dayId: id }); s.flash = `Duplicated as "${n}" in ${R(s, a.routineId).name}.`; break; }
+    case 'DAY_DROP': { const d = D(s, a.dayId), rr = R(s, d.routineId); rr.turns = rr.turns.filter(t => t.dayId !== d.id); break; }
+    case 'DAY_DESTROY': { if (s.sessions.some(x => x.dayId === a.dayId)) { s.flash = 'A Session pins this Day, so it cannot be destroyed. Drop it from the rotation instead.'; break; } const d = D(s, a.dayId), rr = R(s, d.routineId); rr.turns = rr.turns.filter(t => t.dayId !== d.id); s.days = s.days.filter(x => x.id !== d.id); break; }
+    case 'TURN_ADD': R(s, D(s, a.dayId).routineId).turns.push({ id: nid('t'), dayId: a.dayId }); break;
+    case 'TURN_REMOVE': { const rr = R(s, a.routineId); rr.turns = rr.turns.filter(t => t.id !== a.turnId); break; }
+    case 'TURN_MOVE': { const rr = R(s, a.routineId); move(rr.turns, rr.turns.findIndex(t => t.id === a.turnId), a.dir); break; }
+    case 'DAY_LINE_ADD': { const id = resolveEx(s, a.name); if (id) D(s, a.dayId).lines.push({ id: nid('dl'), exId: id }); break; }
+    case 'DAY_LINE_REMOVE': { const d = D(s, a.dayId); d.lines = d.lines.filter(l => l.id !== a.lineId); break; }
+    case 'DAY_LINE_MOVE': { const d = D(s, a.dayId); move(d.lines, d.lines.findIndex(l => l.id === a.lineId), a.dir); break; }
+  }
+  if (s.flash) s.flashN = (state.flashN || 0) + 1;
+  return s;
+}
+
+/* ---------- shared bits ---------- */
+function LastTime({ lt, expandable }) {
+  const [open, setOpen] = useState(false);
+  if (!lt) return html`<div className="lt none">No earlier Sets</div>`;
+  if (expandable) {
+    const notes = lt.groups.flat().filter(x => x.note).length;
+    return html`<button className=${'lt lt-btn' + (open ? ' open' : '')} onClick=${() => setOpen(!open)} aria-expanded=${open}>
+      <div className="lt-h">Last time · ${fmtDate(lt.date)} · ${relDays(lt.date)}${notes ? html` · <span className="lt-more">${open ? 'hide' : notes + (notes > 1 ? ' Notes' : ' Note')}</span>` : null}</div>
+      ${lt.groups.map((g, gi) => html`<div className=${open ? 'lt-list' : 'lt-g'} key=${gi}>${lt.groups.length > 1 && html`<span className="muted">Line ${gi + 1}:</span>`}
+        ${g.map(x => html`<span key=${x.id} className=${'lt-s' + (x.warmup ? ' wu' : '')}>${x.warmup ? 'W ' : ''}${x.weight}×${x.reps}${x.note ? (open ? html` <i>${x.note}</i>` : html`<sup className="nm">●</sup>`) : null}</span>`)}</div>`)}</button>`;
+  }
+  return html`<div className="lt"><div className="lt-h">Last time · ${fmtDate(lt.date)} · ${relDays(lt.date)}</div>
+    ${lt.groups.map((g, gi) => html`<div className="lt-g" key=${gi}>${lt.groups.length > 1 && html`<span className="muted">Line ${gi + 1}:</span>`}
+      ${g.map(x => html`<span key=${x.id} className=${'lt-s' + (x.warmup ? ' wu' : '')}>${x.warmup ? 'W ' : ''}${x.weight}×${x.reps}${x.note ? html` <i>“${x.note}”</i>` : null}</span>`)}</div>`)}</div>`;
+}
+const ltInline = lt => !lt ? 'No earlier Sets' : `${relDays(lt.date)}: ` + lt.groups.map(g => g.map(x => (x.warmup ? 'W' : '') + x.weight + '×' + x.reps + (x.note ? '*' : '')).join(' ')).join(' | ');
+
+function ExInput({ s, onAdd, label = 'Add an Exercise' }) {
+  const [v, setV] = useState(''); const id = useMemo(() => 'exl' + Math.random().toString(36).slice(2), []);
+  return html`<form className="exin" onSubmit=${e => { e.preventDefault(); if (v.trim()) { onAdd(v); setV(''); } }}>
+    <input list=${id} value=${v} onChange=${e => setV(e.target.value)} placeholder=${label} aria-label=${label} />
+    <datalist id=${id}>${s.exercises.filter(e => !e.retired).map(e => html`<option key=${e.id} value=${e.name} />`)}</datalist>
+    <button className="btn" type="submit">Add</button></form>`;
+}
+
+function SetSheet({ s, line, set, date, onClose, dispatch }) {
+  const pf = set ? { reps: set.reps, weight: set.weight } : prefill(s, line, date);
+  const [f, setF] = useState({ reps: pf.reps, weight: pf.weight, warmup: set ? set.warmup : false, note: set ? set.note : '' });
+  const save = () => { dispatch(set ? { type: 'UPDATE_SET', lineId: line.id, setId: set.id, set: f } : { type: 'ADD_SET', lineId: line.id, set: f }); onClose(); };
+  return html`<div className="scrim" onClick=${onClose}><div className="sheet" onClick=${e => e.stopPropagation()}>
+    <div className="sheet-h"><b>${EX(s, line.exId).name}</b><span className="muted">${set ? 'Edit Set' : 'Set ' + (line.sets.length + 1) + ' · prefilled'}</span></div>
+    <${LastTime} lt=${lastTime(s, line.exId, date)} />
+    <div className="fields">
+      <label>Weight (lb)<input id="ss-w" inputMode="decimal" value=${f.weight} onChange=${e => setF({ ...f, weight: e.target.value })} /></label>
+      <label>Reps<input id="ss-r" inputMode="numeric" value=${f.reps} onChange=${e => setF({ ...f, reps: e.target.value })} /></label>
+    </div>
+    <label className="check"><input type="checkbox" checked=${f.warmup} onChange=${e => setF({ ...f, warmup: e.target.checked })} /> Warmup</label>
+    <input className="note-in" placeholder="Note (optional)" value=${f.note} onChange=${e => setF({ ...f, note: e.target.value })} />
+    <div className="row-btns">${set && html`<button className="btn danger" onClick=${() => { dispatch({ type: 'DELETE_SET', lineId: line.id, setId: set.id }); onClose(); }}>Delete</button>`}
+      <span className="grow"></span><button className="btn" onClick=${onClose}>Cancel</button><button className="btn primary" onClick=${save}>Save Set</button></div>
+  </div></div>`;
+}
+
+function History({ s, dispatch, onOpen }) {
+  const items = [...s.sessions.map(x => ({ k: 's', date: x.date, x })), ...s.skips.map(x => ({ k: 'k', date: x.date, x }))]
+    .sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
+  return html`<div className="pad"><h2>History</h2>
+    <ul className="hist">${items.map(it => html`<${HistItem} key=${it.x.id} s=${s} it=${it} onOpen=${() => { dispatch({ type: 'VIEW', date: it.date }); onOpen && onOpen(); }} />`)}</ul></div>`;
+}
+function HistItem({ s, it, onOpen }) {
+  const r = R(s, it.x.routineId);
+  if (it.k === 'k') { const sd = D(s, it.x.dayId);
+    return html`<li><div className="h-skip"><span className="date">${fmtDate(it.date)}</span><span><span className="chip skip">Skip</span> ${r.name} · ${sd ? sd.name : '(Day destroyed)'}</span><span className="muted">passed, nothing logged</span></div></li>`; }
+  return html`<li><button className="h-sess" onClick=${onOpen}><span className="date">${fmtDate(it.date)}</span>
+    <span><span className="chip session">Session</span> ${r.name} · ${D(s, it.x.dayId).name}</span>
+    <span className="muted">${it.x.lines.filter(l => l.sets.length).length} Lines · ${setCount(it.x)} Sets</span></button></li>`;
+}
+
+function Routines({ s, dispatch, engageHere = true }) {
+  const [openR, setOpenR] = useState(s.engagedId); const [nr, setNr] = useState('');
+  const r = openR && R(s, openR);
+  return html`<div className="pad"><h2>Routines</h2>
+    <ul className="rlist">${s.routines.map(x => html`<li key=${x.id} className=${x.id === openR ? 'sel' : ''}>
+      <button className="link" onClick=${() => setOpenR(x.id)}>${x.name}</button><span className="muted">${x.turns.length} Turns</span>
+      ${x.id === s.engagedId ? html`<span className="chip eng">Engaged</span>` : engageHere && html`<button className="btn sm" onClick=${() => dispatch({ type: 'ENGAGE', routineId: x.id })}>Engage</button>`}</li>`)}</ul>
+    <form className="inline" onSubmit=${e => { e.preventDefault(); dispatch({ type: 'ROUTINE_NEW', name: nr }); setNr(''); }}>
+      <input id="new-routine" placeholder="New Routine name" value=${nr} onChange=${e => setNr(e.target.value)} /><button className="btn" type="submit">Create</button></form>
+    ${r && html`<${RoutineEditor} key=${r.id} s=${s} r=${r} dispatch=${dispatch} />`}</div>`;
+}
+function RoutineEditor({ s, r, dispatch }) {
+  const days = s.days.filter(d => d.routineId === r.id);
+  const [nd, setNd] = useState(''); const [addDay, setAddDay] = useState(''); const [openD, setOpenD] = useState(null);
+  const sug = suggestedTurn(s, r);
+  return html`<section className="redit">
+    <h3>${r.name} · Rotation</h3>
+    ${r.turns.length === 0 && html`<p className="muted">Nothing is on the rotation. A Session can't start until a Day has a Turn.</p>`}
+    <ol className="turns">${r.turns.map((t, i) => html`<li key=${t.id} className=${sug && sug.id === t.id ? 'next' : ''}>
+      <span className="tn">${i + 1}</span><span className="grow">${D(s, t.dayId).name} ${sug && sug.id === t.id ? html`<span className="chip">next</span>` : null}</span>
+      <button className="ic" aria-label="Move up" onClick=${() => dispatch({ type: 'TURN_MOVE', routineId: r.id, turnId: t.id, dir: -1 })}>↑</button>
+      <button className="ic" aria-label="Move down" onClick=${() => dispatch({ type: 'TURN_MOVE', routineId: r.id, turnId: t.id, dir: 1 })}>↓</button>
+      <button className="ic" aria-label="Remove Turn" onClick=${() => dispatch({ type: 'TURN_REMOVE', routineId: r.id, turnId: t.id })}>✕</button></li>`)}</ol>
+    ${days.length > 0 && html`<div className="inline"><select value=${addDay} onChange=${e => setAddDay(e.target.value)} aria-label="Day for new Turn">
+      <option value="">Add a Turn for…</option>${days.map(d => html`<option key=${d.id} value=${d.id}>${d.name}</option>`)}</select>
+      <button className="btn" disabled=${!addDay} onClick=${() => { dispatch({ type: 'TURN_ADD', dayId: addDay }); setAddDay(''); }}>Add Turn</button></div>`}
+    <h3>Days</h3>
+    ${days.map(d => { const nT = r.turns.filter(t => t.dayId === d.id).length; const pinned = s.sessions.some(x => x.dayId === d.id);
+      return html`<div key=${d.id} className="dcard"><div className="dhead">
+        <button className="link grow" onClick=${() => setOpenD(openD === d.id ? null : d.id)}>${openD === d.id ? '▾ ' : '▸ '}${d.name}</button>
+        <span className="muted">${nT ? nT + (nT > 1 ? ' Turns' : ' Turn') : 'off rotation'} · ${d.lines.length} Lines</span></div>
+        ${openD === d.id && html`<div className="dbody">
+          <ol className="dlines">${d.lines.map(l => html`<li key=${l.id}><span className="grow">${EX(s, l.exId).name}${EX(s, l.exId).retired ? ' (Retired)' : ''}</span>
+            <button className="ic" aria-label="Move up" onClick=${() => dispatch({ type: 'DAY_LINE_MOVE', dayId: d.id, lineId: l.id, dir: -1 })}>↑</button>
+            <button className="ic" aria-label="Move down" onClick=${() => dispatch({ type: 'DAY_LINE_MOVE', dayId: d.id, lineId: l.id, dir: 1 })}>↓</button>
+            <button className="ic" aria-label="Remove Line" onClick=${() => dispatch({ type: 'DAY_LINE_REMOVE', dayId: d.id, lineId: l.id })}>✕</button></li>`)}</ol>
+          <${ExInput} s=${s} onAdd=${n => dispatch({ type: 'DAY_LINE_ADD', dayId: d.id, name: n })} />
+          <div className="row-btns wrap">
+            ${nT ? html`<button className="btn sm" onClick=${() => dispatch({ type: 'DAY_DROP', dayId: d.id })}>Drop from rotation</button>`
+                 : html`<button className="btn sm" onClick=${() => dispatch({ type: 'TURN_ADD', dayId: d.id })}>Put back</button>`}
+            <select className="btn sm" defaultValue="" aria-label="Duplicate Day" onChange=${e => { if (e.target.value) { dispatch({ type: 'DAY_DUP', dayId: d.id, routineId: e.target.value }); e.target.value = ''; } }}>
+              <option value="">Duplicate to…</option>${s.routines.map(x => html`<option key=${x.id} value=${x.id}>${x.name}</option>`)}</select>
+            <button className="btn sm danger" onClick=${() => dispatch({ type: 'DAY_DESTROY', dayId: d.id })}>Destroy</button></div>
+          ${pinned && html`<p className="note">A Session pins this Day, so Destroy will be refused.</p>`}</div>`}</div>`; })}
+    <form className="inline" onSubmit=${e => { e.preventDefault(); dispatch({ type: 'DAY_NEW', routineId: r.id, name: nd }); setNd(''); }}>
+      <input id="new-day" placeholder="New Day name" value=${nd} onChange=${e => setNd(e.target.value)} /><button className="btn" type="submit">Create Day</button></form>
+  </section>`;
+}
+
+function NotToday({ s, dispatch }) {
+  return s.viewDate !== today() && html`<div className="row-btns" style=${{ padding: '8px 16px 0' }}><span className="muted grow">Viewing ${fmtDate(s.viewDate)}</span>
+    <button className="btn sm" onClick=${() => dispatch({ type: 'VIEW', date: today() })}>Back to today</button></div>`;
+}
+const rotationDays = (s, r) => [...new Set(r.turns.map(t => t.dayId))].map(id => D(s, id));
+
+/* ---------- Variant A: Sheet ---------- */
+function VariantA({ s, dispatch }) {
+  const [tab, setTab] = useState('log'); const [menu, setMenu] = useState(false); const [edit, setEdit] = useState(null); const [lineEd, setLineEd] = useState(false);
+  const L = useLog(s); const eng = R(s, s.engagedId);
+  const editLine = edit && L.lines.find(l => l.id === edit.lineId);
+  return html`<div className="app">
+    <header className="a-bar">
+      <button className="a-rsw" onClick=${() => setMenu(!menu)} aria-expanded=${menu}>${eng.name} ▾</button>
+      <span className="muted">${fmtDate(s.viewDate)}</span></header>
+    ${menu && html`<div className="a-menu"><span className="note" style=${{ padding: '4px 10px' }}>Engaged Routine</span>
+      ${s.routines.map(r => html`<button key=${r.id} onClick=${() => { dispatch({ type: 'ENGAGE', routineId: r.id }); setMenu(false); }}>${r.id === s.engagedId ? '● ' : '○ '}${r.name}</button>`)}</div>`}
+    <main className="scroll">
+      ${tab === 'log' && html`<${Fragment}>
+        <${NotToday} s=${s} dispatch=${dispatch} />
+        ${!L.started && s.viewDate !== today() ? html`<p className="pad muted">No Session on this date.</p>` :
+          !L.started && !L.sug ? html`<p className="pad muted">Nothing is on ${eng.name}'s rotation. Edit the Routine under Routines.</p>` : html`<${Fragment}>
+        ${L.started ? html`<div className="a-banner started"><b>${L.routine.name} · ${L.day.name}</b><span className="muted">${L.turnText} · ${setCount(L.session)} Sets</span></div>`
+          : html`<div className="a-banner"><div className="row-btns"><b className="grow">Up next: ${L.day.name}</b><span className="muted">${L.turnText}</span></div>
+            <div className="row-btns wrap"><select aria-label="Change Day" value=${L.day.id} onChange=${e => dispatch({ type: 'PICK_DAY', dayId: e.target.value })}>
+              ${rotationDays(s, eng).map(d => html`<option key=${d.id} value=${d.id}>${d.name}</option>`)}</select>
+              ${L.canSkip && html`<button className="btn sm" onClick=${() => dispatch({ type: 'SKIP' })}>Skip ${L.sug && D(s, L.sug.dayId).name}</button>`}
+              ${s.skips.some(k => k.routineId === eng.id) && html`<button className="btn sm" onClick=${() => dispatch({ type: 'UNDO_SKIP' })}>Undo last Skip</button>`}</div>
+            <span className="note">Nothing is saved until the first Set.${L.todaySkips.length ? ` ${L.todaySkips.length} Skip(s) today will be replaced.` : ''}</span></div>`}
+        <div className="a-grid">${L.lines.map(l => { const lt = lastTime(s, l.exId, L.date); return html`<div key=${l.id} className="a-row">
+          <div className="a-main"><div className="a-name">${EX(s, l.exId).name}</div>
+            <div className="a-cells">${l.sets.map(st => html`<button key=${st.id} className=${'cell' + (st.warmup ? ' wu' : '')} onClick=${() => setEdit({ lineId: l.id, setId: st.id })}>
+              <span>${st.weight}</span><small>×${st.reps}${st.note ? ' •' : ''}</small></button>`)}
+              <button className="cell add" aria-label="Add Set" onClick=${() => setEdit({ lineId: l.id })}>+</button></div></div>
+          <div className="a-lt">last ${ltInline(lt)}</div>
+          ${lineEd && html`<div className="a-lineed"><button className="ic" onClick=${() => dispatch({ type: 'MOVE_LINE', lineId: l.id, dir: -1 })}>↑</button><button className="ic" onClick=${() => dispatch({ type: 'MOVE_LINE', lineId: l.id, dir: 1 })}>↓</button><button className="ic" onClick=${() => dispatch({ type: 'REMOVE_LINE', lineId: l.id })}>✕</button></div>`}
+        </div>`; })}</div>
+        <div className="pad"><${ExInput} s=${s} label="Add a Line" onAdd=${n => dispatch({ type: 'ADD_LINE', name: n })} />
+          <button className="btn sm" onClick=${() => setLineEd(!lineEd)}>${lineEd ? 'Done editing Lines' : 'Reorder or remove Lines'}</button></div>
+        <//>`}<//>`}
+      ${tab === 'history' && html`<${History} s=${s} dispatch=${dispatch} onOpen=${() => setTab('log')} />`}
+      ${tab === 'routines' && html`<${Routines} s=${s} dispatch=${dispatch} />`}
+    </main>
+    <nav className="tabs">${[['log', 'Log'], ['history', 'History'], ['routines', 'Routines']].map(([k, t]) => html`<button key=${k} className=${tab === k ? 'on' : ''} onClick=${() => setTab(k)}>${t}</button>`)}</nav>
+    ${editLine && html`<${SetSheet} s=${s} line=${editLine} set=${edit.setId && editLine.sets.find(x => x.id === edit.setId)} date=${L.date} dispatch=${dispatch} onClose=${() => setEdit(null)} />`}
+  </div>`;
+}
+
+/* ---------- Variant B: Focus ---------- */
+function FocusEntry({ s, line, date, dispatch }) {
+  const init = () => { const p = prefill(s, line, date); return { weight: p.weight, reps: p.reps, warmup: false, note: '' }; };
+  const [f, setF] = useState(init);
+  useEffect(() => { setF(init()); }, [line.id, line.sets.length]);
+  const step = (k, d) => setF(x => ({ ...x, [k]: Math.max(k === 'reps' ? 1 : 0, (+x[k] || 0) + d) }));
+  return html`<div style=${{ display: 'grid', gap: '12px' }}>
+    <div className="stepper"><span className="lab">Weight (lb)</span><button onClick=${() => step('weight', -5)}>−5</button>
+      <input id="b-w" inputMode="decimal" value=${f.weight} onChange=${e => setF({ ...f, weight: e.target.value })} aria-label="Weight" /><button onClick=${() => step('weight', 5)}>+5</button></div>
+    <div className="stepper"><span className="lab">Reps</span><button onClick=${() => step('reps', -1)}>−1</button>
+      <input id="b-r" inputMode="numeric" value=${f.reps} onChange=${e => setF({ ...f, reps: e.target.value })} aria-label="Reps" /><button onClick=${() => step('reps', 1)}>+1</button></div>
+    <div className="row-btns"><label className="check"><input type="checkbox" checked=${f.warmup} onChange=${e => setF({ ...f, warmup: e.target.checked })} /> Warmup</label>
+      <input className="note-in grow" placeholder="Note (optional)" value=${f.note} onChange=${e => setF({ ...f, note: e.target.value })} /></div>
+    <button className="btn primary big" onClick=${() => dispatch({ type: 'ADD_SET', lineId: line.id, set: f })}>Save Set ${line.sets.length + 1}</button></div>`;
+}
+function VariantB({ s, dispatch }) {
+  const [screen, setScreen] = useState('today'); const [drawer, setDrawer] = useState(false); const [go, setGo] = useState(false);
+  const [idx, setIdx] = useState(0); const [picking, setPicking] = useState(false); const [edit, setEdit] = useState(null); const [adding, setAdding] = useState(false);
+  const L = useLog(s); const eng = R(s, s.engagedId);
+  const focus = screen === 'today' && (L.started || go);
+  const i = Math.min(idx, Math.max(0, L.lines.length - 1)); const line = L.lines[i];
+  const editLine = edit && L.lines.find(l => l.id === edit.lineId);
+  return html`<div className="app">
+    <header className="b-bar"><button className="ic" aria-label="Menu" onClick=${() => setDrawer(true)}>☰</button>
+      <b className="grow">${screen === 'today' ? (focus ? `${L.routine.name} · ${L.day ? L.day.name : ''}` : 'Today') : screen === 'history' ? 'History' : 'Routines'}</b>
+      ${focus && !L.started && html`<button className="btn sm" onClick=${() => setGo(false)}>Back</button>`}</header>
+    ${drawer && html`<div className="b-drawer" onClick=${() => setDrawer(false)}><nav onClick=${e => e.stopPropagation()}>
+      ${[['today', 'Today'], ['history', 'History'], ['routines', 'Routines']].map(([k, t]) => html`<button key=${k} className=${screen === k ? 'on' : ''} onClick=${() => { setScreen(k); setDrawer(false); }}>${t}</button>`)}
+      <div className="b-eng"><span className="note">Engaged Routine</span>
+        ${s.routines.map(r => html`<button key=${r.id} className=${r.id === s.engagedId ? 'on' : ''} onClick=${() => { if (r.id !== s.engagedId) dispatch({ type: 'ENGAGE', routineId: r.id }); setDrawer(false); setGo(false); }}>${r.id === s.engagedId ? '● ' : '○ '}${r.name}</button>`)}
+        <span className="note">New Sessions and Skips go to the Engaged Routine. Past Sessions stay put.</span></div></nav></div>`}
+    <main className="scroll">
+      ${screen === 'today' && html`<${Fragment}><${NotToday} s=${s} dispatch=${dispatch} />
+        ${!focus && (s.viewDate !== today() ? html`<p className="pad muted">No Session on this date.</p>` : !L.sug ? html`<p className="pad muted">Nothing is on ${eng.name}'s rotation. Open Routines from the menu.</p>` : html`<div className="b-today">
+          <span className="muted">${eng.name} · ${L.turnText}</span><span className="big">${L.day.name}</span>
+          ${L.overridden && html`<span className="note">Suggested was ${D(s, L.sug.dayId).name}</span>`}
+          <button className="btn primary big" onClick=${() => { setGo(true); setIdx(0); }}>Start ${L.day.name}</button>
+          ${picking ? html`<div className="b-days">${rotationDays(s, eng).map(d => html`<button key=${d.id} className="btn" onClick=${() => { dispatch({ type: 'PICK_DAY', dayId: d.id }); setPicking(false); }}>${d.name}</button>`)}</div>`
+            : html`<div className="row-btns" style=${{ justifyContent: 'center' }}><button className="btn" onClick=${() => setPicking(true)}>Pick another Day</button>
+              ${L.canSkip && html`<button className="btn" onClick=${() => dispatch({ type: 'SKIP' })}>Skip it</button>`}</div>`}
+          ${s.skips.some(k => k.routineId === eng.id) && html`<button className="link" style=${{ textAlign: 'center' }} onClick=${() => dispatch({ type: 'UNDO_SKIP' })}>Undo last Skip</button>`}
+          <span className="note">Start opens the Lines. The Session exists once you save a Set.</span></div>`)}
+        ${focus && html`<${Fragment}>
+          <div className="b-chips">${L.lines.map((l, j) => html`<button key=${l.id} className=${'b-chip' + (j === i ? ' on' : '')} onClick=${() => { setIdx(j); setAdding(false); }}>${EX(s, l.exId).name}<span className="n">${l.sets.length || ''}</span></button>`)}
+            <button className="b-chip" onClick=${() => setAdding(!adding)}>+ Line</button></div>
+          <div className="pad">
+            ${adding && html`<${ExInput} s=${s} label="Add a Line" onAdd=${n => { dispatch({ type: 'ADD_LINE', name: n }); setIdx(L.lines.length); setAdding(false); }} />`}
+            ${line ? html`<${Fragment}>
+              <div className="row-btns"><span className="b-ex grow">${EX(s, line.exId).name}</span><span className="muted">${i + 1}/${L.lines.length}</span></div>
+              <${LastTime} key=${line.id} lt=${lastTime(s, line.exId, L.date)} expandable />
+              ${line.sets.length > 0 && html`<div className="b-sets">${line.sets.map((st, k) => html`<button key=${st.id} className=${'b-set' + (st.warmup ? ' wu' : '')} onClick=${() => setEdit({ lineId: line.id, setId: st.id })}>${k + 1}. ${st.weight}×${st.reps}${st.note ? ' •' : ''}</button>`)}</div>`}
+              <${FocusEntry} key=${line.id} s=${s} line=${line} date=${L.date} dispatch=${dispatch} />
+              <div className="b-nav"><button className="btn" disabled=${i === 0} onClick=${() => setIdx(i - 1)}>‹ Previous</button>
+                ${!line.sets.length && html`<button className="btn sm danger" onClick=${() => dispatch({ type: 'REMOVE_LINE', lineId: line.id })}>Remove Line</button>`}
+                <button className="btn" disabled=${i >= L.lines.length - 1} onClick=${() => setIdx(i + 1)}>Next ›</button></div><//>`
+              : html`<p className="muted">This Day has no Lines. Add one above.</p>`}
+          </div><//>`}<//>`}
+      ${screen === 'history' && html`<${History} s=${s} dispatch=${dispatch} onOpen=${() => setScreen('today')} />`}
+      ${screen === 'routines' && html`<${Routines} s=${s} dispatch=${dispatch} />`}
+    </main>
+    ${editLine && html`<${SetSheet} s=${s} line=${editLine} set=${editLine.sets.find(x => x.id === edit.setId)} date=${L.date} dispatch=${dispatch} onClose=${() => setEdit(null)} />`}
+  </div>`;
+}
+
+/* ---------- Variant C: Timeline ---------- */
+function QuickAdd({ s, line, date, dispatch }) {
+  const init = () => { const p = prefill(s, line, date); return { weight: p.weight, reps: p.reps, warmup: false, note: '' }; };
+  const [f, setF] = useState(init); const [noteOpen, setNoteOpen] = useState(false);
+  useEffect(() => { setF(init()); setNoteOpen(false); }, [line.id, line.sets.length]);
+  return html`<div style=${{ display: 'grid', gap: '6px' }}><div className="c-quick">
+    <input inputMode="decimal" aria-label="Weight lb" placeholder="lb" value=${f.weight} onChange=${e => setF({ ...f, weight: e.target.value })} />
+    <input inputMode="numeric" aria-label="Reps" placeholder="reps" value=${f.reps} onChange=${e => setF({ ...f, reps: e.target.value })} />
+    <button className=${'w' + (f.warmup ? ' on' : '')} title="Warmup" onClick=${() => setF({ ...f, warmup: !f.warmup })}>W</button>
+    <button className="btn primary" onClick=${() => dispatch({ type: 'ADD_SET', lineId: line.id, set: f })}>Add</button></div>
+    ${noteOpen ? html`<input className="note-in" placeholder="Note for this Set" value=${f.note} onChange=${e => setF({ ...f, note: e.target.value })} />`
+      : html`<button className="link" style=${{ fontSize: '12px', fontWeight: 500 }} onClick=${() => setNoteOpen(true)}>+ Note</button>`}</div>`;
+}
+function VariantC({ s, dispatch }) {
+  const [open, setOpen] = useState(null); const [page, setPage] = useState('feed'); const [menu, setMenu] = useState(false); const [edit, setEdit] = useState(null);
+  const L = useLog(s); const eng = R(s, s.engagedId);
+  const editLine = edit && L.lines.find(l => l.id === edit.lineId);
+  const feed = [...s.sessions.filter(x => x.date !== s.viewDate).map(x => ({ k: 's', date: x.date, x })), ...s.skips.filter(x => x.date !== s.viewDate).map(x => ({ k: 'k', date: x.date, x }))]
+    .sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
+  const cur = L.routine && cursorIdx(s, eng);
+  return html`<div className="app">
+    <header className="c-bar">
+      ${page === 'routines' ? html`<button className="btn sm" onClick=${() => setPage('feed')}>‹ Back</button><b className="grow">Routines</b>`
+        : html`<b className="grow">Wolog</b><button className="a-rsw" onClick=${() => setMenu(!menu)}>${eng.name} ▾</button><button className="ic" aria-label="Routines" onClick=${() => setPage('routines')}>⚙</button>`}</header>
+    ${menu && html`<div className="a-menu" style=${{ left: 'auto', right: '12px' }}><span className="note" style=${{ padding: '4px 10px' }}>Engaged Routine</span>
+      ${s.routines.map(r => html`<button key=${r.id} onClick=${() => { dispatch({ type: 'ENGAGE', routineId: r.id }); setMenu(false); }}>${r.id === s.engagedId ? '● ' : '○ '}${r.name}</button>`)}
+      <button onClick=${() => { setPage('routines'); setMenu(false); }}>Edit Routines…</button></div>`}
+    <main className="scroll">
+      ${page === 'routines' ? html`<${Routines} s=${s} dispatch=${dispatch} />` : html`<${Fragment}>
+      <div className="c-card"><div className="c-head">
+        <div className="row-btns"><b className="grow">${s.viewDate === today() ? 'Today' : fmtDate(s.viewDate)}</b>
+          ${s.viewDate !== today() && html`<button className="btn sm" onClick=${() => dispatch({ type: 'VIEW', date: today() })}>Back to today</button>`}</div>
+        ${L.started ? html`<span><span className="chip session">Session</span> ${L.routine.name} · ${L.day.name} · <span className="muted">${L.turnText}</span></span>`
+          : s.viewDate !== today() ? html`<span className="muted">No Session on this date.</span>`
+          : !L.sug ? html`<span className="muted">Nothing is on ${eng.name}'s rotation. Tap ⚙ to edit it.</span>`
+          : html`<${Fragment}><span className="muted">Tap a Turn to pick that Day. Dashed = where you are, blue = what you'll log.</span>
+            <div className="c-ring">${eng.turns.map((t, j) => html`<button key=${t.id} className=${'c-turn' + (j === cur ? ' cur' : '') + (L.pin && L.pin.id === t.id ? ' pin' : '')} onClick=${() => dispatch({ type: 'PICK_DAY', dayId: t.dayId })}>
+              <small>${j + 1}${j === cur ? ' · last' : ''}</small>${D(s, t.dayId).name}</button>`)}</div>
+            <div className="row-btns">${L.canSkip && html`<button className="btn sm" onClick=${() => dispatch({ type: 'SKIP' })}>Skip ${D(s, L.sug.dayId).name}</button>`}
+              ${s.skips.some(k => k.routineId === eng.id) && html`<button className="btn sm" onClick=${() => dispatch({ type: 'UNDO_SKIP' })}>Undo last Skip</button>`}
+              <span className="note grow" style=${{ textAlign: 'right' }}>Saved at first Set</span></div><//>`}
+      </div>
+      ${(L.started || (s.viewDate === today() && L.sug)) && html`<${Fragment}>
+        ${L.lines.map(l => { const lt = lastTime(s, l.exId, L.date); const isOpen = open === l.id;
+          return html`<div key=${l.id} className="c-line"><button className="c-lhead" onClick=${() => setOpen(isOpen ? null : l.id)}>
+            <b>${EX(s, l.exId).name}</b><span className="sum grow">${l.sets.length ? l.sets.map(x => x.weight + '×' + x.reps).join('  ') : 'last ' + ltInline(lt)}</span><span className="muted">${l.sets.length || ''}</span></button>
+            ${isOpen && html`<div className="c-open"><div className="c-cols">
+              <div className="c-col"><span className="h">${lt ? 'Last · ' + relDays(lt.date) : 'Last time'}</span>
+                ${lt ? lt.groups.map((g, gi) => html`<${Fragment} key=${gi}>${lt.groups.length > 1 && html`<span className="muted">Line ${gi + 1}</span>`}${g.map(x => html`<span key=${x.id} className=${x.warmup ? 'wu' : ''}>${x.warmup ? 'W ' : ''}${x.weight}×${x.reps}${x.note ? ' *' : ''}</span>`)}<//>`) : html`<span className="muted">No earlier Sets</span>`}
+                ${lt && lt.groups.flat().filter(x => x.note).map(x => html`<span key=${'n' + x.id} className="note">* ${x.note}</span>`)}</div>
+              <div className="c-col"><span className="h">Today</span>${l.sets.map(x => html`<button key=${x.id} className=${x.warmup ? 'wu' : ''} onClick=${() => setEdit({ lineId: l.id, setId: x.id })}>${x.warmup ? 'W ' : ''}${x.weight}×${x.reps}${x.note ? ' *' : ''}</button>`)}
+                ${!l.sets.length && html`<span className="muted">none yet</span>`}</div></div>
+              <${QuickAdd} s=${s} line=${l} date=${L.date} dispatch=${dispatch} />
+              ${!l.sets.length && html`<button className="link" style=${{ fontSize: '12px', color: 'var(--danger)' }} onClick=${() => dispatch({ type: 'REMOVE_LINE', lineId: l.id })}>Remove this Line</button>`}</div>`}</div>`; })}
+        <div className="c-line" style=${{ padding: '10px 14px' }}><${ExInput} s=${s} label="Add a Line" onAdd=${n => dispatch({ type: 'ADD_LINE', name: n })} /></div><//>`}
+      </div>
+      <div className="c-feed"><h3>Earlier</h3><ul className="hist">${feed.map(it => html`<${HistItem} key=${it.x.id} s=${s} it=${it} onOpen=${() => { dispatch({ type: 'VIEW', date: it.date }); setOpen(null); }} />`)}</ul></div><//>`}
+    </main>
+    ${editLine && html`<${SetSheet} s=${s} line=${editLine} set=${editLine.sets.find(x => x.id === edit.setId)} date=${L.date} dispatch=${dispatch} onClose=${() => setEdit(null)} />`}
+  </div>`;
+}
+
+/* ---------- prototype chrome ---------- */
+const VARS = [['a', 'Sheet', VariantA], ['b', 'Focus', VariantB], ['c', 'Timeline', VariantC]];
+const hashVar = () => { const h = location.hash.slice(1).toLowerCase(); return VARS.some(v => v[0] === h) ? h : 'b'; };
+function debug(s) {
+  const r = R(s, s.engagedId), sug = suggestedTurn(s, r), c = cursorIdx(s, r), sess = s.sessions.find(x => x.date === s.viewDate), d = currentDraft(s);
+  return {
+    viewDate: s.viewDate, engaged: r.name,
+    rotation: r.turns.map((t, i) => `${i + 1}:${D(s, t.dayId).name}${i === c ? ' (cursor)' : ''}${sug && t.id === sug.id ? ' (next)' : ''}`),
+    sessionOnDate: sess ? { routine: R(s, sess.routineId).name, day: D(s, sess.dayId).name, turn: turnLabel(R(s, sess.routineId), sess.turnId), lines: sess.lines.map(l => `${EX(s, l.exId).name}: ${l.sets.map(x => (x.warmup ? 'W' : '') + x.weight + 'x' + x.reps).join(' ') || '-'}`) } : null,
+    unsavedDraft: sess ? null : { day: d.dayId && D(s, d.dayId).name, willPin: d.dayId && pinTurn(s, r, d.dayId) ? turnLabel(r, pinTurn(s, r, d.dayId).id) : null, lines: d.lines.map(l => EX(s, l.exId).name) },
+    skips: s.skips.map(k => `${k.date} ${R(s, k.routineId).name} ${turnLabel(R(s, k.routineId), k.turnId)}`),
+    sessions: s.sessions.map(x => `${x.date} ${R(s, x.routineId).name} ${D(s, x.dayId).name} [${setCount(x)} Sets]`).sort().reverse(),
+  };
+}
+function Toast({ msg, n }) {
+  const [show, setShow] = useState(false);
+  useEffect(() => { if (!msg) return; setShow(true); const t = setTimeout(() => setShow(false), 3200); return () => clearTimeout(t); }, [n]);
+  return show && msg ? html`<div className="toast" role="status">${msg}</div>` : null;
+}
+function App() {
+  const [s, dispatch] = useReducer(reducer, null, seed);
+  const [v, setV] = useState(hashVar); const [showState, setShowState] = useState(false);
+  useEffect(() => { const f = () => setV(hashVar()); addEventListener('hashchange', f); return () => removeEventListener('hashchange', f); }, []);
+  const go = d => { const i = (VARS.findIndex(x => x[0] === v) + d + VARS.length) % VARS.length; location.hash = VARS[i][0]; setV(VARS[i][0]); };
+  useEffect(() => {
+    const k = e => { const t = e.target; if (t.closest && t.closest('input, textarea, select, [contenteditable]')) return; if (e.key === 'ArrowLeft') go(-1); if (e.key === 'ArrowRight') go(1); };
+    addEventListener('keydown', k); return () => removeEventListener('keydown', k);
+  });
+  const cur = VARS.find(x => x[0] === v);
+  return html`<${Fragment}>
+    <div className="frame"><${cur[2]} key=${v} s=${s} dispatch=${dispatch} /></div>
+    <${Toast} msg=${s.flash} n=${s.flashN} />
+    ${showState && html`<div className="statepanel"><pre>${JSON.stringify(debug(s), null, 1)}</pre></div>`}
+    <div className="switcher" aria-label="Prototype variant switcher">
+      <button aria-label="Previous variant" onClick=${() => go(-1)}>‹</button><span className="lbl">${cur[0].toUpperCase()} · ${cur[1]}</span>
+      <button aria-label="Next variant" onClick=${() => go(1)}>›</button>
+      <button onClick=${() => setShowState(!showState)}>${showState ? 'Hide state' : 'State'}</button>
+      <button onClick=${() => dispatch({ type: 'RESET' })}>Reset</button></div>
+  <//>`;
+}
+ReactDOM.createRoot(document.getElementById('root')).render(html`<${App} />`);
+</script>
