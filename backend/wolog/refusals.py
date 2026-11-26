@@ -1,5 +1,7 @@
 """Refusals: every refused action answers with a plain message saying why (spec §7)."""
 
+from typing import Any
+
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -11,6 +13,11 @@ class RefusalBody(BaseModel):
 
     code: str
     message: str
+
+
+def documented(*statuses: int) -> dict[int | str, dict[str, Any]]:
+    """The refusals a route can answer with, for the OpenAPI schema. Every one has the RefusalBody shape."""
+    return {s: {"model": RefusalBody} for s in statuses}
 
 
 class Refusal(Exception):

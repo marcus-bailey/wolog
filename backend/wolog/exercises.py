@@ -1,6 +1,6 @@
 """The Exercise library (spec §4.1): list, create, rename, Retire / Un-retire, and delete if unused."""
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 from psycopg.errors import ForeignKeyViolation
@@ -10,8 +10,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from wolog import names
-from wolog.db import Base, get_session
-from wolog.refusals import Refusal, RefusalBody
+from wolog.db import MAX_ID, Base, get_session
+from wolog.refusals import Refusal, documented
 
 
 class Exercise(Base):
@@ -43,15 +43,8 @@ class ExerciseOut(BaseModel):
     retired: bool
 
 
-MAX_ID = 2**31 - 1  # exercise.id is a Postgres integer
-
 router = APIRouter(prefix="/api/exercises", tags=["exercises"])
 DbSession = Annotated[Session, Depends(get_session, scope="function")]
-
-
-def _refusals(*statuses: int) -> dict[int | str, dict[str, Any]]:
-    """The refusals a route can answer with, for the OpenAPI schema. Every one has the RefusalBody shape."""
-    return {s: {"model": RefusalBody} for s in statuses}
 
 
 def _out(e: Exercise) -> ExerciseOut:
@@ -111,7 +104,7 @@ def _get_locked(db: Session, exercise_id: int) -> Exercise:
     return exercise
 
 
-@router.get("", responses=_refusals(422))
+@router.get("", responses=documented(422))
 def list_exercises(db: DbSession, retired: bool | None = None) -> list[ExerciseOut]:
     """Every Exercise, or with `retired=false` only those a picker offers, or with `retired=true` only Retired ones."""
     query = select(Exercise).order_by(func.lower(Exercise.name), Exercise.id)
@@ -120,14 +113,14 @@ def list_exercises(db: DbSession, retired: bool | None = None) -> list[ExerciseO
     return [_out(e) for e in db.scalars(query)]
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, responses=_refusals(409, 422))
+@router.post("", status_code=status.HTTP_201_CREATED, responses=documented(409, 422))
 def create_exercise(body: ExerciseIn, db: DbSession) -> ExerciseOut:
     exercise = Exercise()
     _claim_name(db, exercise, _valid_name(body.name), creating=True)
     return _out(exercise)
 
 
-@router.patch("/{exercise_id}", responses=_refusals(404, 409, 422))
+@router.patch("/{exercise_id}", responses=documented(404, 409, 422))
 def change_exercise(exercise_id: int, body: ExerciseChange, db: DbSession) -> ExerciseOut:
     """Rename keeps the identity; a name held by another Exercise, live or Retired, is refused (no merge)."""
     exercise = _get_locked(db, exercise_id)
@@ -139,7 +132,7 @@ def change_exercise(exercise_id: int, body: ExerciseChange, db: DbSession) -> Ex
     return _out(exercise)
 
 
-@router.delete("/{exercise_id}", status_code=status.HTTP_204_NO_CONTENT, responses=_refusals(404, 409, 422))
+@router.delete("/{exercise_id}", status_code=status.HTTP_204_NO_CONTENT, responses=documented(404, 409, 422))
 def delete_exercise(exercise_id: int, db: DbSession) -> None:
     """Hard-delete an unused Exercise. Every Line references its Exercise with ON DELETE RESTRICT,
     so an Exercise on any Line (Day or Session, empty or not) cannot be deleted; Retire it instead."""
