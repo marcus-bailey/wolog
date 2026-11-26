@@ -5,19 +5,23 @@ A single-user workout tracker: named Routines, an Exercise library, and dated Se
 ## Language
 
 **Routine**:
-A named plan with an ordered rotation of Days. The rotation may be empty while Days still belong to it off-rotation. Several Routines can exist; one is the Engaged Routine.
+A named plan whose rotation is an ordered list of Turns over its Days. The rotation may be empty while Days still belong to it off-rotation. Several Routines can exist; one is the Engaged Routine.
 _Avoid_: Workout, program, split (as the name of the whole plan)
 
 **Day**:
-A named slot that belongs to one Routine, holding an ordered list of Lines. It may sit on that Routine's rotation or be off it until it is put back or destroyed. A Day is not a calendar weekday.
-_Avoid_: Workout (as the name of the slot)
+A named plan for one visit, belonging to one Routine for good, holding an ordered list of Lines. It is on the rotation while it has at least one Turn, and off it otherwise until it is put back or destroyed. A Day is not a calendar weekday.
+_Avoid_: Workout (as the name of the Day)
+
+**Turn**:
+One place in a Routine's rotation, naming one Day of that Routine. A Day may have several Turns. A Turn keeps its identity when the rotation is reordered. Sessions and Skips pin a Turn, and the suggestion is the next Turn.
+_Avoid_: slot, position, step (as the rotation entry); Day (as the rotation entry)
 
 **Rest**:
 A calendar date with no Session and no Skips. Rest is not a Day and does not advance the Routine.
 _Avoid_: Rest day (as a Day), off day (as a slot)
 
 **Skip**:
-A dated pass of the then-suggested Day on a Routine, with no Session on that Routine that date. Several Skips may share a date and a Routine; a date cannot hold both Skips and a Session for the same Routine. Skip belongs to the Engaged Routine at skip time.
+A dated pass of the then-suggested Turn on a Routine, recording that Turn and its Day, with no Session on that Routine that date. Several Skips may share a date and a Routine; a date cannot hold both Skips and a Session for the same Routine. Skip belongs to the Engaged Routine at skip time.
 _Avoid_: Rest (as a pass), skipped Day (as a Day)
 
 **Exercise**:
@@ -61,8 +65,12 @@ The load on a Set, in pounds. A non-negative number; fractions are allowed. Zero
 _Avoid_: BW, bw+N, load (as a second field), kilogram
 
 **Engaged Routine**:
-The one Routine the user is currently running. Logging always uses this Routine until they switch. Engagement is sticky; it is not a calendar week.
+The one Routine the user is currently running. Once any Routine exists, exactly one is engaged; it changes only by switching to another. New Sessions and Skips always go to this Routine. Engagement is sticky; it is not a calendar week. Past engagements are not recorded beyond what Sessions and Skips point at.
 _Avoid_: Active program, current workout, weekly assignment
+
+**Last-time**:
+The Sets of an Exercise from the most recent earlier Session that has any, across every Routine and Day. It is derived from history and not stored, and it follows the Exercise's identity through rename and Retire.
+_Avoid_: previous workout, PR, best (as last-time)
 
 **Snapshot**:
 The copy of a Day's Lines taken when the first Set of a Session is saved. After that the Session has one list of Lines; later Day edits do not change it. Snapshot is that copy-on-create, not a second stored planned list.
