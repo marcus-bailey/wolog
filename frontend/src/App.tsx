@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
 import { ExerciseLibrary } from './exercises/ExerciseLibrary';
 import { History } from './history/History';
 import { Layout } from './Layout';
+import { RoutineDetail } from './routines/RoutineDetail';
 import { RoutineList } from './routines/RoutineList';
 import { RoutinesProvider } from './routines/RoutinesContext';
 import { Today } from './today/Today';
@@ -26,6 +27,7 @@ export function AppRoutes() {
           <Route index element={<Today />} />
           <Route path="history" element={<History />} />
           <Route path="routines" element={<RoutineList />} />
+          <Route path="routines/:routineId" element={<RoutineDetail />} />
           <Route path="exercises" element={<ExerciseLibrary />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

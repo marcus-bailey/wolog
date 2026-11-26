@@ -135,7 +135,7 @@ function RoutineRow({ routine }: { routine: Routine }) {
     <li className="routine">
       <div className="row">
         <span className="name">
-          {routine.name}
+          <Link to={`/routines/${routine.id}`}>{routine.name}</Link>
           {routine.engaged && <span className="engaged"> ● Engaged</span>}
         </span>
         {!routine.engaged && (

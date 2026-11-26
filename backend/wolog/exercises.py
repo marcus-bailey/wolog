@@ -47,7 +47,7 @@ router = APIRouter(prefix="/api/exercises", tags=["exercises"])
 DbSession = Annotated[Session, Depends(get_session, scope="function")]
 
 
-def _out(e: Exercise) -> ExerciseOut:
+def exercise_out(e: Exercise) -> ExerciseOut:
     return ExerciseOut(id=e.id, name=e.name, retired=e.retired)
 
 
@@ -94,6 +94,30 @@ def _claim_name(db: Session, exercise: Exercise, name: str, *, creating: bool) -
         raise _taken(other.name, retired=other.retired, creating=creating) from exc
 
 
+def attach_by_name(db: Session, raw: str) -> Exercise:
+    """The Exercise a name typed on a Line means (spec §4.1): a live Exercise with that name, attached
+    as it is (a case-only match keeps its stored name); else a new Exercise with that name. A Retired
+    Exercise's name is refused, pointing to it. The Exercise found is share-locked, so it can't be
+    Retired or deleted before the Line referencing it commits."""
+    name = _valid_name(raw)
+    found = db.scalar(select(Exercise).where(func.lower(Exercise.name) == func.lower(name)).with_for_update(read=True))
+    if found is None:
+        created = Exercise()
+        try:
+            _claim_name(db, created, name, creating=True)
+            return created
+        except Refusal:
+            # Another request created it meanwhile: attach that one, or point to it if Retired.
+            found = db.scalar(
+                select(Exercise).where(func.lower(Exercise.name) == func.lower(name)).with_for_update(read=True)
+            )
+            if found is None:
+                raise
+    if found.retired:
+        raise _taken(found.name, retired=True, creating=True)
+    return found
+
+
 def _get_locked(db: Session, exercise_id: int) -> Exercise:
     """The Exercise, locked FOR UPDATE until the request's transaction ends."""
     # An id beyond the column's range names no Exercise; asking Postgres would fail, not miss.
@@ -110,14 +134,14 @@ def list_exercises(db: DbSession, retired: bool | None = None) -> list[ExerciseO
     query = select(Exercise).order_by(func.lower(Exercise.name), Exercise.id)
     if retired is not None:
         query = query.where(Exercise.retired == retired)
-    return [_out(e) for e in db.scalars(query)]
+    return [exercise_out(e) for e in db.scalars(query)]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, responses=documented(409, 422))
 def create_exercise(body: ExerciseIn, db: DbSession) -> ExerciseOut:
     exercise = Exercise()
     _claim_name(db, exercise, _valid_name(body.name), creating=True)
-    return _out(exercise)
+    return exercise_out(exercise)
 
 
 @router.patch("/{exercise_id}", responses=documented(404, 409, 422))
@@ -129,7 +153,7 @@ def change_exercise(exercise_id: int, body: ExerciseChange, db: DbSession) -> Ex
     if body.retired is not None:
         exercise.retired = body.retired
     db.flush()
-    return _out(exercise)
+    return exercise_out(exercise)
 
 
 @router.delete("/{exercise_id}", status_code=status.HTTP_204_NO_CONTENT, responses=documented(404, 409, 422))

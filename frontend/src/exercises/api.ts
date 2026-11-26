@@ -7,7 +7,7 @@ export interface Exercise {
   retired: boolean;
 }
 
-function isExercise(value: unknown): value is Exercise {
+export function isExercise(value: unknown): value is Exercise {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
   return typeof v.id === 'number' && typeof v.name === 'string' && typeof v.retired === 'boolean';

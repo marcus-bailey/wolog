@@ -38,6 +38,7 @@ it('Today names the Engaged Routine and says its rotation is empty', async () =>
 
   expect(await screen.findByText('PPL')).toBeInTheDocument();
   expect(screen.getByText('Nothing is on the rotation.')).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Open PPL' })).toHaveAttribute('href', '/routines/1');
   expect(screen.queryByRole('button', { name: /Skip/ })).not.toBeInTheDocument();
 });
 
