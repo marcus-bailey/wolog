@@ -1,6 +1,6 @@
 # Wolog spec
 
-The handoff spec for Wolog, a single-user workout tracker on a private home network. It covers requirements, user stories, and a high-level tech stack. A build effort should be able to start from this document plus [`CONTEXT.md`](../CONTEXT.md) without re-deciding the domain.
+The handoff spec for Wolog, a single-user workout tracker served from the apps server (`apps.marcusbailey.com/wolog/`), behind that server's login. It covers requirements, user stories, and a high-level tech stack. A build effort should be able to start from this document plus [`CONTEXT.md`](../CONTEXT.md) without re-deciding the domain.
 
 Produced by the map [Spec the Wolog workout tracker](https://github.com/marcus-bailey/wolog/issues/1). Each section links its source decisions; see [Sources](#11-sources).
 
@@ -17,13 +17,13 @@ Wolog lets its owner keep several **Routines**, author an **Exercise** library, 
 - At most one Session per date, created from a **Snapshot** of its Day.
 - Sets that record **Reps**, **Weight** (lb), **Warmup**/**Working**, and an optional **Note**.
 - History as a list of Sessions and Skips, plus **Last-time** while logging.
-- Nightly backups with a restore path.
-- Deployment as Docker images on a home Kubernetes cluster.
+- Backups through the apps server's nightly dumps, with a restore drill.
+- Deployment as Docker images on the apps server (AWS Lightsail), at `/wolog/`.
 
 **Out of scope**
 
 - Progress views, charts, PRs, "best Set".
-- Auth, identity, and accounts as a product. Multi-user. Cloud sync.
+- Auth, identity, and accounts as a product (the apps server's login fronts Wolog; Wolog has none of its own). Multi-user. Cloud sync.
 - Native apps, installable PWA, wearables, nutrition, imported programs, social.
 - An owner-facing Export or Import.
 - Everything ruled out in [Decide what a Set records](https://github.com/marcus-bailey/wolog/issues/4): kg and unit settings, `bw`/`bw+N`, RPE/RIR, timed work, tempo, rest timers, supersets, drop-sets, assisted load, zero-rep Sets.
@@ -241,7 +241,7 @@ Sources: [Map weekdays to Days](https://github.com/marcus-bailey/wolog/issues/3)
 
 Source: [Prototype the logger and editor screens](https://github.com/marcus-bailey/wolog/issues/11). This section is normative. The throwaway prototype (branch [`prototype/logger-and-editor-screens`](https://github.com/marcus-bailey/wolog/tree/prototype/logger-and-editor-screens), `prototypes/logger-and-editors.prototype.html`, view `#b`) is a **non-normative** visual reference. Where the two differ, this spec wins.
 
-**Navigation.** A menu drawer (☰) with **Today**, **History**, and **Routines**. Under the heading "Engaged Routine", the drawer lists every Routine and marks the engaged one (●); tapping another Routine switches to it. Nothing on the logging screen switches Routines.
+**Navigation.** A menu drawer (☰) with **Today**, **History**, **Routines**, and **Sign out** (the apps server's sign-out). Under the heading "Engaged Routine", the drawer lists every Routine and marks the engaged one (●); tapping another Routine switches to it. Nothing on the logging screen switches Routines.
 
 **First run.** With no Routine, Today points the owner to create one.
 
@@ -286,8 +286,6 @@ Source: [Prototype the logger and editor screens](https://github.com/marcus-bail
   - Create Day at the bottom.
   - Rename, Duplicate, and Destroy for the Routine.
 - **Exercise library:** list, create, rename, Retire / Un-retire, delete if unused, and a Retired filter. It is reached from Routines or the drawer; the build may place it.
-
-**Backup banner.** A quiet banner on every screen when the last successful backup is older than 36 hours (§9).
 
 ## 6. User stories
 
@@ -341,13 +339,12 @@ The actor is always the owner. Acceptance criteria are the referenced requiremen
 
 **Operations (OPS)**
 
-- **OPS-1** My data is dumped nightly to the NAS and pruned to 14 nightly plus 12 month-end dumps. *Accept:* §9.
-- **OPS-2** I see a banner when the last good backup is older than 36 h.
-- **OPS-3** I can restore any dump by following the runbook. *Accept:* the restore drill passes.
+- **OPS-1** I can deploy any commit on main to the apps server with one command, and roll back by naming an earlier commit. *Accept:* §8.
+- **OPS-2** My data is in the apps server's nightly dumps, and I can restore it. *Accept:* §9 restore drill passes.
 
 ## 7. Non-functional requirements
 
-- **One user, private LAN.** No sign-in, accounts, roles, or login state. The app trusts its network.
+- **One user, behind the apps server's login.** Wolog has no sign-in, accounts, roles, or login state of its own. The apps server's login (Cognito + oauth2-proxy) checks every request first. When the API answers `401`, the SPA sends the browser to sign in and back to the same page; unsaved screen input may be lost, as with a switch race.
 - **Phone-first.** Every screen works one-handed on a phone at the gym, with large tap targets on the logger. Desktop works but needs no special layout.
 - **Dates are civil dates** from the browser's local calendar. No timestamps on domain records and no time zones in the model.
 - **Pounds only.** Weight is shown and entered in lb.
@@ -357,57 +354,38 @@ The actor is always the owner. Acceptance criteria are the referenced requiremen
 
 ## 8. Tech stack and deployment
 
-Source: [Name the SPA, API, and database](https://github.com/marcus-bailey/wolog/issues/2) (research note on branch `research/name-the-spa-api-and-database`, `docs/research/spa-api-database.md`).
+Sources: [Name the SPA, API, and database](https://github.com/marcus-bailey/wolog/issues/2) (research note on branch `research/name-the-spa-api-and-database`, `docs/research/spa-api-database.md`) for the stack. The runtime follows the apps server ([`marcus-bailey/apps-server`](https://github.com/marcus-bailey/apps-server)), like the todo and groceries apps; this replaces the earlier home Kubernetes target.
 
 | Layer | Choice |
 | --- | --- |
-| SPA | React + TypeScript, built with Vite to static files |
+| SPA | React + TypeScript, built with Vite to static files, served by nginx |
 | API | FastAPI (Python), JSON, OpenAPI schema, one Uvicorn process per container |
-| Database | PostgreSQL, official image |
+| Database | A `wolog` database and user on the apps server's shared Postgres 17 (`apps-postgres`) |
 | Migrations | Alembic, run before the API serves |
-| Runtime | Docker images on the home Kubernetes cluster |
+| Runtime | Docker Compose on the apps server (AWS Lightsail), images from GitHub's container registry |
 
 ```
-              LAN browser
-                  │  one host, path routing
-            ┌─────┴──────┐
-       /    ▼            ▼  /api
-   ┌────────────┐  ┌─────────────┐   ┌──────────────┐
-   │ spa (nginx │  │ api FastAPI │──▶│  postgres    │──▶ PV (Retain)
-   │ static)    │  │ 1 replica   │   └──────────────┘
-   └────────────┘  └─────────────┘          ▲
-                     ▲ init: alembic         │ pg_dump nightly
-                                       ┌─────┴────────┐
-                                       │ backup       │──▶ NAS NFS PV
-                                       │ CronJob      │
-                                       └──────────────┘
+Browser ──► apps-nginx :443 (login) ──┬─ /wolog/       ──► wolog-frontend (nginx, static SPA)
+                                      ├─ /wolog/api/   ──► wolog-backend (FastAPI) ──► apps-postgres
+                                      └─ /wolog/health ──► wolog-backend
+                                                              apps-postgres ◄── apps-backup ──► S3 (nightly)
 ```
 
-- **Three containers:** the SPA static files, the API, and Postgres. Never put the database in the API image.
-- **Postgres** runs as a single-replica StatefulSet on a PersistentVolume with reclaim policy **Retain**, not `hostPath`.
-- **Migrations** run as an init container or one-shot Job before the API serves. No `create_all` at startup.
-- **Same origin in production:** one ingress host routes `/api` to the API and everything else to the SPA, so CORS is needed only in development.
-- **One API replica** is enough.
+- **Two Wolog containers:** the SPA and the API. The database is the apps server's shared Postgres, never in the API image. Both containers join the server's `apps-edge` network, the API also `apps-db`, and neither publishes a port.
+- **Path prefix:** the SPA and API work under `/wolog/`. The apps server's nginx strips the prefix and routes `/wolog/api/` to the API and everything else to the SPA, so production is same-origin and CORS is needed only in development. The nginx location lives in the apps-server repo; API locations answer `401` rather than redirecting.
+- **Images:** CI builds both images on every commit to main and pushes them to GitHub's container registry, tagged `sha-<commit>`.
+- **Deploy:** one script, run on the Mac, copies the compose file to the server and starts the given commit's images, defaulting to the latest on main. Naming an earlier commit rolls back. Secrets live only in the server's `.env` next to the compose file.
+- **Migrations** run before the API serves. No `create_all` at startup.
+- **One API container** is enough.
 
 ## 9. Backup and restore
 
-Source: [How Wolog data is backed up and restored](https://github.com/marcus-bailey/wolog/issues/12).
+Backups belong to the apps server, not to Wolog.
 
-- **Backup:**
-  - A Kubernetes CronJob runs nightly at a fixed hour after usual training time (for example 03:00 local).
-  - It runs `pg_dump -Fc`, one file per run, onto an NFS export on the LAN NAS mounted as a PersistentVolume. Nothing is kept on the host disk.
-- **Integrity:** each run checks its new dump with `pg_restore --list` and fails if the dump is unreadable.
-- **Retention:** keep 14 nightly plus 12 month-end dumps. The job prunes the rest.
-- **Failure notice:**
-  - Each successful run records its completion time where the API can read it.
-  - The API exposes the last-success time.
-  - The SPA shows a quiet banner when that time is older than 36 h or missing. This catches jobs that never ran as well as ones that failed.
-- **Restore:** ship a one-off restore Job manifest that takes a dump filename and mounts the same NFS PV, plus a runbook:
-  1. Scale the API to 0.
-  2. Run the restore Job (`pg_restore --clean --if-exists`).
-  3. Scale the API back up.
-- **Restore drill**, required at first deploy and after every Postgres major-version upgrade: restore into a scratch database and confirm the latest Session is present.
-- There is no owner-facing Export or Import.
+- **Backup:** the apps server's backup job dumps every database on `apps-postgres` nightly (03:30 Phoenix time) with `pg_dump -Fc` to S3 and keeps 30 days. Wolog's database is included as soon as it exists. Wolog ships no backup job of its own.
+- **Restore:** follow the apps server README's restore runbook: restore the `wolog` dump into a scratch database, check it, then swap it in with the API stopped.
+- **Restore drill**, required at first deploy and after every Postgres major-version upgrade: run a backup, restore the `wolog` dump into a scratch database, and confirm the latest Session is present.
+- There is no owner-facing Export or Import, and no backup banner.
 
 ## 10. Definition of done for the build
 
@@ -416,8 +394,8 @@ The build that follows this spec is done when:
 1. Every story in §6 meets its acceptance criteria, and every rule in §4 has an automated test at the API level. That includes the suggestion and cursor walk-back, the Skip gap, Turn re-pinning, Last-time walk-back, and post-state writes.
 2. Every refusal in §4 is enforced by the API, not only hidden in the SPA.
 3. The logger is usable on a phone for a full Session without zooming.
-4. The three images deploy to the home cluster with migrations-before-serve, a retained PV, and same-origin routing.
-5. The backup CronJob has run successfully, the banner has been seen to appear when the backup is stale, and the restore drill has passed.
+4. Both images deploy to the apps server with the deploy script, with migrations-before-serve, the shared Postgres, and same-origin routing under `/wolog/` behind the login.
+5. The apps server's nightly backup includes the `wolog` database, and the restore drill has passed.
 6. Domain terms in code, API, and UI copy match [`CONTEXT.md`](../CONTEXT.md).
 
 ## 11. Sources
@@ -435,5 +413,6 @@ Each decision on the map and where it lands in this spec:
 | [What last-time shows while logging](https://github.com/marcus-bailey/wolog/issues/8) | §4.8 |
 | [How Days and Routines are authored](https://github.com/marcus-bailey/wolog/issues/10) | §4.2, §4.3, §4.4 |
 | [Prototype the logger and editor screens](https://github.com/marcus-bailey/wolog/issues/11) | §4.4, §4.9, §5 |
-| [How Wolog data is backed up and restored](https://github.com/marcus-bailey/wolog/issues/12) | §9 |
+| [How Wolog data is backed up and restored](https://github.com/marcus-bailey/wolog/issues/12) | §9 (superseded by the apps-server move) |
+| Move Wolog to the apps server (2026-11-26, following todo and groceries) | §1, §5, §6, §7, §8, §9, §10 |
 | [Write the handoff spec](https://github.com/marcus-bailey/wolog/issues/9) | this document's shape |
