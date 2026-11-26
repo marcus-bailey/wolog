@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { messageOf } from '../api';
 import {
   createExercise,
   deleteExercise,
@@ -242,8 +243,4 @@ function ExerciseRow({ exercise, onChanged, onDeleted }: RowProps) {
 
 function sortByName(list: Exercise[]): Exercise[] {
   return [...list].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.id - b.id);
-}
-
-function messageOf(e: unknown): string {
-  return e instanceof Error ? e.message : 'Something went wrong. Try again.';
 }

@@ -47,3 +47,8 @@ export async function request(
   }
   return data;
 }
+
+/** What to tell the owner when an action fails: the API's refusal, or a plain fallback. */
+export function messageOf(e: unknown): string {
+  return e instanceof Error ? e.message : 'Something went wrong. Try again.';
+}

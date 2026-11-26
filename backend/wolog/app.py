@@ -4,7 +4,7 @@ strips the /wolog/ prefix before requests arrive here (spec §8)."""
 from fastapi import FastAPI
 from sqlalchemy import Engine
 
-from wolog import exercises, health, refusals
+from wolog import exercises, health, refusals, routines
 from wolog.db import database_url, make_engine
 
 
@@ -14,4 +14,5 @@ def create_app(engine: Engine | None = None) -> FastAPI:
     refusals.install(app)
     app.include_router(health.router)
     app.include_router(exercises.router)
+    app.include_router(routines.router)
     return app

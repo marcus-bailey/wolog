@@ -7,6 +7,8 @@ from fastapi import Request
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import DeclarativeBase, Session
 
+MAX_ID = 2**31 - 1  # ids are Postgres integers; a larger one names nothing
+
 
 class Base(DeclarativeBase):
     pass
