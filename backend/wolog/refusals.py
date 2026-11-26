@@ -34,7 +34,8 @@ def install(app: FastAPI) -> None:
         detail = ""
         if errors:
             first = errors[0]
-            where = ".".join(str(part) for part in first["loc"][1:])
+            # Name the field (body.name -> "name"); skip list indexes, which mean nothing to a reader.
+            where = ".".join(part for part in first["loc"][1:] if isinstance(part, str))
             detail = f" {where}: {first['msg']}." if where else f" {first['msg']}."
         body = RefusalBody(code="invalid_request", message=f"That request isn’t valid.{detail}")
         return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content=body.model_dump())

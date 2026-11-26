@@ -3,6 +3,7 @@
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, status
+from psycopg.errors import ForeignKeyViolation
 from pydantic import BaseModel
 from sqlalchemy import CheckConstraint, Identity, Index, false, func, select
 from sqlalchemy.exc import IntegrityError
@@ -41,6 +42,8 @@ class ExerciseOut(BaseModel):
     name: str
     retired: bool
 
+
+MAX_ID = 2**31 - 1  # exercise.id is a Postgres integer
 
 router = APIRouter(prefix="/api/exercises", tags=["exercises"])
 DbSession = Annotated[Session, Depends(get_session, scope="function")]
@@ -100,7 +103,9 @@ def _claim_name(db: Session, exercise: Exercise, name: str, *, creating: bool) -
 
 def _get_locked(db: Session, exercise_id: int) -> Exercise:
     """The Exercise, locked FOR UPDATE until the request's transaction ends."""
-    exercise = db.get(Exercise, exercise_id, with_for_update=True)
+    # An id beyond the column's range names no Exercise; asking Postgres would fail, not miss.
+    in_range = 1 <= exercise_id <= MAX_ID
+    exercise = db.get(Exercise, exercise_id, with_for_update=True) if in_range else None
     if exercise is None:
         raise Refusal(status.HTTP_404_NOT_FOUND, "not_found", "That Exercise no longer exists.")
     return exercise
@@ -145,6 +150,8 @@ def delete_exercise(exercise_id: int, db: DbSession) -> None:
             db.delete(exercise)
             db.flush()
     except IntegrityError as exc:
+        if not isinstance(exc.orig, ForeignKeyViolation):  # only a Line's reference means "in use"
+            raise
         raise Refusal(
             status.HTTP_409_CONFLICT,
             "exercise_in_use",

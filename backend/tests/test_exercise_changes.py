@@ -3,6 +3,7 @@
 from collections.abc import Iterator
 from typing import Any
 
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, text
@@ -18,7 +19,7 @@ def create(client: TestClient, name: str) -> dict[str, Any]:
     return body
 
 
-def change(client: TestClient, exercise_id: int, **fields: object):  # type: ignore[no-untyped-def]
+def change(client: TestClient, exercise_id: int, **fields: object) -> httpx2.Response:
     return client.patch(f"/api/exercises/{exercise_id}", json=fields)
 
 
@@ -299,3 +300,28 @@ def test_the_schema_lists_only_the_refusals_each_route_can_give(client: TestClie
         for c, response in paths[path][method]["responses"].items():
             if c[0] in "45":
                 assert response["content"]["application/json"]["schema"] == refusal, (method, path, c)
+
+
+def test_a_name_freed_again_during_the_write_is_still_refused(client: TestClient, name_check: NameCheck) -> None:
+    """Both lookups miss: the write hit the unique index, but the holder is gone by the time we look."""
+    create(client, "Squat")
+    name_check.misses = 2
+    res = client.post("/api/exercises", json={"name": "squat"})
+    assert res.json() == {"code": "name_taken", "message": "There is already an Exercise called “squat”."}
+
+
+@pytest.mark.parametrize("exercise_id", [0, -1, 2**31, 99999999999])
+def test_an_id_no_exercise_can_have_is_not_found(client: TestClient, exercise_id: int) -> None:
+    assert change(client, exercise_id, retired=True).json()["code"] == "not_found"
+    assert client.delete(f"/api/exercises/{exercise_id}").json()["code"] == "not_found"
+
+
+def test_a_malformed_body_is_refused_without_internal_detail(client: TestClient) -> None:
+    res = client.patch("/api/exercises/1", content=b"{bad", headers={"Content-Type": "application/json"})
+    assert res.status_code == 422
+    assert res.json() == {"code": "invalid_request", "message": "That request isn’t valid. JSON decode error."}
+
+
+def test_a_missing_field_is_named(client: TestClient) -> None:
+    res = client.post("/api/exercises", json={})
+    assert res.json() == {"code": "invalid_request", "message": "That request isn’t valid. name: Field required."}
