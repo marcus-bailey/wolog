@@ -22,7 +22,7 @@ def test_the_library_starts_empty(client: TestClient) -> None:
 def test_create_then_list(client: TestClient) -> None:
     res = create(client, "Bench Press")
     assert res.status_code == 201
-    assert res.json() == {"id": res.json()["id"], "name": "Bench Press"}
+    assert res.json() == {"id": res.json()["id"], "name": "Bench Press", "retired": False}
     assert client.get("/api/exercises").json() == [res.json()]
 
 
