@@ -36,7 +36,7 @@ it('Today names the Engaged Routine and says its rotation is empty', async () =>
   fakeRoutinesApi([ppl, ul]);
   renderAt('/');
 
-  expect(await screen.findByText('PPL')).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'Up next · PPL' })).toBeInTheDocument();
   expect(screen.getByText('Nothing is on the rotation.')).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Open PPL' })).toHaveAttribute('href', '/routines/1');
   expect(screen.queryByRole('button', { name: /Skip/ })).not.toBeInTheDocument();
@@ -45,7 +45,7 @@ it('Today names the Engaged Routine and says its rotation is empty', async () =>
 it('the drawer goes to Today, History and Routines, and offers Sign out', async () => {
   fakeRoutinesApi([ppl]);
   renderAt('/');
-  await screen.findByText('PPL');
+  await screen.findByRole('heading', { name: 'Up next · PPL' });
 
   await userEvent.click(within(await openDrawer()).getByRole('link', { name: 'History' }));
   expect(screen.getByRole('heading', { name: 'History' })).toBeInTheDocument();
@@ -63,7 +63,7 @@ it('the drawer goes to Today, History and Routines, and offers Sign out', async 
 it('the drawer lists every Routine, marks the engaged one, and switches on tap', async () => {
   const { fetch } = fakeRoutinesApi([ppl, ul]);
   renderAt('/');
-  await screen.findByText('PPL');
+  await screen.findByRole('heading', { name: 'Up next · PPL' });
 
   const drawer = await openDrawer();
   const switches = within(within(drawer).getByRole('list', { name: 'Engaged Routine' })).getAllByRole('button');
@@ -73,8 +73,8 @@ it('the drawer lists every Routine, marks the engaged one, and switches on tap',
   ]);
 
   await userEvent.click(within(drawer).getByRole('button', { name: 'Upper Lower' }));
-  expect(fetch).toHaveBeenLastCalledWith('/wolog/api/routines/2/engage', expect.objectContaining({ method: 'POST' }));
-  expect(await screen.findByText('Upper Lower')).toBeInTheDocument(); // Today follows the switch
+  expect(fetch).toHaveBeenCalledWith('/wolog/api/routines/2/engage', expect.objectContaining({ method: 'POST' }));
+  expect(await screen.findByRole('heading', { name: 'Up next · Upper Lower' })).toBeInTheDocument(); // Today follows the switch
   expect(screen.queryByRole('navigation', { name: 'Menu' })).not.toBeInTheDocument();
 
   const again = await openDrawer();
@@ -85,7 +85,7 @@ it('the drawer lists every Routine, marks the engaged one, and switches on tap',
 it('the drawer shows a refused switch and keeps the engagement', async () => {
   const { fetch } = fakeRoutinesApi([ppl, ul]);
   renderAt('/');
-  await screen.findByText('PPL');
+  await screen.findByRole('heading', { name: 'Up next · PPL' });
   const drawer = await openDrawer();
   fetch.mockResolvedValueOnce(
     new Response(JSON.stringify({ code: 'not_found', message: 'That Routine no longer exists.' }), {

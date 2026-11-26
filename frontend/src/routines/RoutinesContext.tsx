@@ -11,6 +11,8 @@ interface Routines {
   saved: (routine: Routine) => void;
   /** Switch the Engaged Routine. Rejects with the API's refusal. */
   engage: (id: number) => Promise<void>;
+  /** Load the Routines again, e.g. after a refusal says they changed elsewhere. */
+  reload: () => Promise<void>;
 }
 
 const RoutinesContext = createContext<Routines | null>(null);
@@ -23,9 +25,21 @@ export function RoutinesProvider({ children }: { children: ReactNode }) {
   const [routines, setRoutines] = useState<Routine[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const reload = useCallback(
+    () =>
+      listRoutines().then(
+        (list) => {
+          setRoutines(list);
+          setLoadError(null);
+        },
+        (e: unknown) => setLoadError(messageOf(e)),
+      ),
+    [],
+  );
+
   useEffect(() => {
-    listRoutines().then(setRoutines, (e: unknown) => setLoadError(messageOf(e)));
-  }, []);
+    void reload();
+  }, [reload]);
 
   const saved = useCallback((routine: Routine) => {
     setRoutines((list) => sortByName([...(list ?? []).filter((r) => r.id !== routine.id), routine]));
@@ -40,7 +54,10 @@ export function RoutinesProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  const value = useMemo(() => ({ routines, loadError, saved, engage }), [routines, loadError, saved, engage]);
+  const value = useMemo(
+    () => ({ routines, loadError, saved, engage, reload }),
+    [routines, loadError, saved, engage, reload],
+  );
   return <RoutinesContext.Provider value={value}>{children}</RoutinesContext.Provider>;
 }
 

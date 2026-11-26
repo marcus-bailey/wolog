@@ -26,6 +26,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from wolog import exercises, names
 from wolog.db import MAX_ID, Base, get_session
 from wolog.exercises import Exercise, ExerciseOut
+from wolog.pins import cursor, next_index
 from wolog.refusals import Refusal, documented
 from wolog.routines import Routine, RoutineOut
 
@@ -67,6 +68,7 @@ class Turn(Base):
             ["day_id", "routine_id"], ["day.id", "day.routine_id"], name="turn_day_of_routine", ondelete="CASCADE"
         ),
         UniqueConstraint("routine_id", "position", name="turn_position_key", deferrable=True, initially="DEFERRED"),
+        UniqueConstraint("id", "day_id", name="turn_id_day_key"),
         Index("turn_day", "day_id"),
     )
 
@@ -113,6 +115,8 @@ class RoutineDetail(RoutineOut):
 
     days: list[DayOut]
     rotation: list[TurnOut]
+    next_turn_id: int | None
+    """The Turn the suggestion would be on (spec §4.4), whether or not this Routine is engaged."""
 
 
 router = APIRouter(tags=["days"])
@@ -176,13 +180,15 @@ def append_turn(db: Session, routine: Routine, day_id: int) -> None:
 
 def detail_of(db: Session, routine: Routine) -> RoutineDetail:
     days = db.scalars(select(Day).where(Day.routine_id == routine.id).order_by(Day.id))
-    turns = db.scalars(select(Turn).where(Turn.routine_id == routine.id).order_by(Turn.position))
+    turns = list(db.scalars(select(Turn).where(Turn.routine_id == routine.id).order_by(Turn.position)))
+    ids = [t.id for t in turns]
     return RoutineDetail(
         id=routine.id,
         name=routine.name,
         engaged=routine.engaged,
         days=[_day_out(db, d) for d in days],
         rotation=[TurnOut(id=t.id, day_id=t.day_id) for t in turns],
+        next_turn_id=ids[next_index(ids, cursor(db, routine.id))] if ids else None,
     )
 
 
