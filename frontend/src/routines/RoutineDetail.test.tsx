@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { RoutineDetail } from './RoutineDetail';
 import type { Exercise } from '../exercises/api';
-import type { Day } from './api';
+import type { Day, Turn } from './api';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -15,21 +15,41 @@ function json(status: number, body: unknown) {
 const norm = (s: string) => s.trim().replace(/\s+/g, ' ');
 
 /** The Day routes of the API, in memory, with its rules for names and Lines. */
-function fakeApi(exercises: Exercise[] = [], days: Day[] = []) {
+function fakeApi(exercises: Exercise[] = [], days: Day[] = [], rotation?: Turn[]) {
   let nextId = 100;
-  const state = { days: structuredClone(days), exercises: structuredClone(exercises) };
+  const state = {
+    days: structuredClone(days),
+    exercises: structuredClone(exercises),
+    rotation: rotation ?? days.map((d) => ({ id: d.id + 1000, day_id: d.id })),
+  };
+  const detail = () => ({ id: 1, name: 'PPL', engaged: true, days: state.days, rotation: state.rotation });
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
     const path = url.replace('/wolog/api/', '');
     const method = init?.method ?? 'GET';
     const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
     if (method === 'GET' && path === 'routines/1') {
-      return json(200, {
-        id: 1,
-        name: 'PPL',
-        engaged: true,
-        days: state.days,
-        rotation: state.days.map((d) => ({ id: d.id + 1000, day_id: d.id })),
-      });
+      return json(200, detail());
+    }
+    if (path === 'routines/1/turns' && method === 'POST') {
+      state.rotation.push({ id: nextId++, day_id: body.day_id as number });
+      return json(200, detail());
+    }
+    if (path === 'routines/1/turns' && method === 'PUT') {
+      const ids = body.turn_ids as number[];
+      state.rotation = ids.map((id) => state.rotation.find((t) => t.id === id)!);
+      return json(200, detail());
+    }
+    const turn = /^routines\/1\/turns\/(\d+)$/.exec(path);
+    if (turn && method === 'DELETE') {
+      state.rotation = state.rotation.filter((t) => t.id !== Number(turn[1]));
+      return json(200, detail());
+    }
+    const onDay = /^days\/(\d+)\/(drop|put-back)$/.exec(path);
+    if (onDay) {
+      const dayId = Number(onDay[1]);
+      if (onDay[2] === 'drop') state.rotation = state.rotation.filter((t) => t.day_id !== dayId);
+      else state.rotation.push({ id: nextId++, day_id: dayId });
+      return json(200, detail());
     }
     if (method === 'GET' && path === 'exercises?retired=false') return json(200, state.exercises.filter((e) => !e.retired));
     if (method === 'POST' && path === 'routines/1/days') {
@@ -38,6 +58,7 @@ function fakeApi(exercises: Exercise[] = [], days: Day[] = []) {
       if (other) return json(409, { code: 'name_taken', message: `There is already a Day called “${other.name}” in this Routine.` });
       const day = { id: nextId++, name, lines: [] };
       state.days.push(day);
+      state.rotation.push({ id: nextId++, day_id: day.id });
       return json(201, day);
     }
     const m = /^days\/(\d+)(\/lines)?(?:\/(\d+))?$/.exec(path);
@@ -122,7 +143,7 @@ it('creates Days at the bottom, each starting with no Lines', async () => {
 it('shows a Day name collision', async () => {
   fakeApi([], [{ id: 10, name: 'Push', lines: [] }]);
   renderDetail();
-  await screen.findByText('Push');
+  await screen.findByRole('button', { name: /^Push/ });
 
   await userEvent.type(screen.getByLabelText('New Day'), 'push');
   await userEvent.click(screen.getByRole('button', { name: 'Create Day' }));
@@ -269,4 +290,118 @@ it('says when the Routine no longer exists', async () => {
   );
   renderDetail();
   expect(await screen.findByRole('alert')).toHaveTextContent('That Routine no longer exists.');
+});
+
+// The rotation (DAY-3)
+
+const push = { id: 10, name: 'Push', lines: [] };
+const pull = { id: 11, name: 'Pull', lines: [] };
+const legs = { id: 12, name: 'Legs', lines: [] };
+
+function rotationNames() {
+  return within(screen.getByRole('list', { name: 'Rotation' }))
+    .getAllByRole('listitem')
+    .map((li) => `${li.querySelector('.position')?.textContent} ${li.querySelector('.name')?.textContent}`);
+}
+
+it('shows the rotation as numbered Turns naming their Days', async () => {
+  fakeApi([], [push, pull, legs], [
+    { id: 1, day_id: 10 },
+    { id: 2, day_id: 11 },
+    { id: 3, day_id: 10 },
+    { id: 4, day_id: 12 },
+  ]);
+  renderDetail();
+  await screen.findByRole('list', { name: 'Rotation' });
+  expect(rotationNames()).toEqual(['1 Push', '2 Pull', '3 Push', '4 Legs']);
+});
+
+it('a new Day appears at the end of the rotation', async () => {
+  fakeApi([], [push]);
+  renderDetail();
+  await screen.findByRole('list', { name: 'Rotation' });
+  await userEvent.type(screen.getByLabelText('New Day'), 'Pull');
+  await userEvent.click(screen.getByRole('button', { name: 'Create Day' }));
+  await screen.findByText('2');
+  expect(rotationNames()).toEqual(['1 Push', '2 Pull']);
+});
+
+it('adds a Turn for a Day at the end, repeats allowed', async () => {
+  const { fetch } = fakeApi([], [push, pull]);
+  renderDetail();
+  await screen.findByRole('list', { name: 'Rotation' });
+  expect(screen.getByRole('button', { name: 'Add Turn' })).toBeDisabled();
+
+  await userEvent.selectOptions(screen.getByLabelText('Add a Turn for…'), 'Push');
+  await userEvent.click(screen.getByRole('button', { name: 'Add Turn' }));
+  await screen.findByText('3');
+  expect(rotationNames()).toEqual(['1 Push', '2 Pull', '3 Push']);
+  expect(fetch).toHaveBeenLastCalledWith(
+    '/wolog/api/routines/1/turns',
+    expect.objectContaining({ method: 'POST', body: JSON.stringify({ day_id: 10 }) }),
+  );
+});
+
+it('reorders Turns with ↑ / ↓, keeping their identity, and removes one with ✕', async () => {
+  const { fetch } = fakeApi([], [push, pull, legs]);
+  renderDetail();
+  await screen.findByRole('list', { name: 'Rotation' });
+  expect(screen.getByRole('button', { name: 'Move Turn 1, Push up' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Move Turn 3, Legs down' })).toBeDisabled();
+
+  await userEvent.click(screen.getByRole('button', { name: 'Move Turn 3, Legs up' }));
+  await screen.findByRole('button', { name: 'Move Turn 2, Legs up' });
+  expect(rotationNames()).toEqual(['1 Push', '2 Legs', '3 Pull']);
+  expect(fetch).toHaveBeenLastCalledWith(
+    '/wolog/api/routines/1/turns',
+    expect.objectContaining({ method: 'PUT', body: JSON.stringify({ turn_ids: [1010, 1012, 1011] }) }),
+  );
+
+  await userEvent.click(screen.getByRole('button', { name: 'Remove Turn 1, Push' }));
+  await screen.findByRole('button', { name: 'Remove Turn 1, Legs' });
+  expect(rotationNames()).toEqual(['1 Legs', '2 Pull']);
+  expect(fetch).toHaveBeenLastCalledWith('/wolog/api/routines/1/turns/1010', expect.objectContaining({ method: 'DELETE' }));
+});
+
+it('the rotation may be empty', async () => {
+  fakeApi([], [push], []);
+  renderDetail();
+  expect(await screen.findByText('Nothing is on the rotation. Add a Turn for a Day below.')).toBeInTheDocument();
+  expect(screen.queryByRole('list', { name: 'Rotation' })).not.toBeInTheDocument();
+});
+
+it('Drop takes a Day off the rotation and Put back adds one Turn at the end', async () => {
+  const { fetch } = fakeApi([], [push, pull], [
+    { id: 1, day_id: 10 },
+    { id: 2, day_id: 11 },
+    { id: 3, day_id: 10 },
+  ]);
+  renderDetail();
+  await expand('Push');
+
+  await userEvent.click(screen.getByRole('button', { name: 'Drop Push from the rotation' }));
+  await screen.findByRole('button', { name: 'Put Push back on the rotation' });
+  expect(rotationNames()).toEqual(['1 Pull']);
+  expect(screen.getByRole('button', { name: /^Push/ })).toHaveTextContent('off the rotation');
+  expect(fetch).toHaveBeenLastCalledWith('/wolog/api/days/10/drop', expect.objectContaining({ method: 'POST' }));
+
+  await userEvent.click(screen.getByRole('button', { name: 'Put Push back on the rotation' }));
+  await screen.findByRole('button', { name: 'Drop Push from the rotation' });
+  expect(rotationNames()).toEqual(['1 Pull', '2 Push']);
+  expect(screen.getByRole('button', { name: /^Push/ })).not.toHaveTextContent('off the rotation');
+  expect(fetch).toHaveBeenLastCalledWith('/wolog/api/days/10/put-back', expect.objectContaining({ method: 'POST' }));
+});
+
+it('reloads the Routine when the rotation changed elsewhere', async () => {
+  const { fetch, state } = fakeApi([], [push, pull]);
+  renderDetail();
+  await screen.findByRole('list', { name: 'Rotation' });
+  state.rotation.push({ id: 99, day_id: 10 });
+  fetch.mockResolvedValueOnce(
+    json(409, { code: 'rotation_changed', message: 'The rotation changed since you loaded it. Reload and try again.' }),
+  );
+
+  await userEvent.click(screen.getByRole('button', { name: 'Move Turn 2, Pull up' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('The rotation changed since you loaded it.');
+  await screen.findByRole('button', { name: 'Remove Turn 3, Push' });
 });

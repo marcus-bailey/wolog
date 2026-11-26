@@ -4,18 +4,24 @@ import { messageOf, Refused } from '../api';
 import { listExercises, type Exercise } from '../exercises/api';
 import {
   addLine,
+  addTurn,
   createDay,
+  dropDay,
   getRoutine,
+  putBackDay,
   removeLine,
+  removeTurn,
   renameDay,
   reorderLines,
+  reorderTurns,
   type Day,
   type RoutineDetail as Detail,
 } from './api';
 
 /**
- * Routine detail (spec §5): its Days, each expandable to edit its Lines, and Create Day at the
- * bottom. Lines are added by typing an Exercise's name; the picker offers live Exercises only.
+ * Routine detail (spec §5): the rotation as numbered Turns, then the Days, each expandable to edit
+ * its Lines and to Drop it from or Put it back on the rotation, and Create Day at the bottom. Lines
+ * are added by typing an Exercise's name; the picker offers live Exercises only.
  */
 export function RoutineDetail() {
   const routineId = Number(useParams().routineId);
@@ -70,13 +76,22 @@ export function RoutineDetail() {
         {detail.name}
         {detail.engaged && <span className="engaged"> ● Engaged</span>}
       </h1>
+      <RotationEditor detail={detail} onChanged={setDetail} onStale={reload} />
       <h2>Days</h2>
       {detail.days.length === 0 ? (
         <p className="quiet">No Days yet. Create the first one below.</p>
       ) : (
         <ul className="list" aria-label="Days">
           {detail.days.map((day) => (
-            <DayItem key={day.id} day={day} picks={picks} onChanged={dayChanged} onStale={reload} />
+            <DayItem
+              key={day.id}
+              day={day}
+              onRotation={detail.rotation.some((t) => t.day_id === day.id)}
+              picks={picks}
+              onChanged={dayChanged}
+              onRotationChanged={setDetail}
+              onStale={reload}
+            />
           ))}
         </ul>
       )}
@@ -136,15 +151,132 @@ function CreateDay({ routineId, onCreated }: { routineId: number; onCreated: () 
   );
 }
 
+interface RotationProps {
+  detail: Detail;
+  onChanged: (detail: Detail) => void;
+  /** The rotation changed elsewhere: reload the Routine. */
+  onStale: () => Promise<void>;
+}
+
+/** The rotation (spec §4.3): numbered Turns with ↑ / ↓ / ✕, and "Add a Turn for…" a Day. */
+function RotationEditor({ detail, onChanged, onStale }: RotationProps) {
+  const [dayId, setDayId] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const dayName = new Map(detail.days.map((d) => [d.id, d.name]));
+  const turns = detail.rotation;
+
+  async function act(action: () => Promise<Detail>) {
+    setBusy(true);
+    setError(null);
+    try {
+      onChanged(await action());
+    } catch (e) {
+      setError(messageOf(e));
+      if (e instanceof Refused && (e.code === 'rotation_changed' || e.code === 'not_found')) await onStale();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function move(index: number, by: -1 | 1) {
+    const ids = turns.map((t) => t.id);
+    ids.splice(index + by, 0, ...ids.splice(index, 1));
+    void act(() => reorderTurns(detail.id, ids));
+  }
+
+  const onAdd = (event: FormEvent) => {
+    event.preventDefault();
+    if (!dayId) return;
+    void act(() => addTurn(detail.id, Number(dayId)));
+  };
+
+  return (
+    <section aria-labelledby="rotation-heading">
+      <h2 id="rotation-heading">Rotation</h2>
+      {turns.length === 0 ? (
+        <p className="quiet">
+          Nothing is on the rotation.{detail.days.length > 0 ? ' Add a Turn for a Day below.' : ''}
+        </p>
+      ) : (
+        <ol className="lines turns" aria-label="Rotation">
+          {turns.map((turn, i) => {
+            const label = `Turn ${i + 1}, ${dayName.get(turn.day_id) ?? ''}`;
+            return (
+              <li key={turn.id} className="line">
+                <span className="position">{i + 1}</span>
+                <span className="name">{dayName.get(turn.day_id)}</span>
+                <button
+                  type="button"
+                  className="icon"
+                  aria-label={`Move ${label} up`}
+                  disabled={busy || i === 0}
+                  onClick={() => move(i, -1)}
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  className="icon"
+                  aria-label={`Move ${label} down`}
+                  disabled={busy || i === turns.length - 1}
+                  onClick={() => move(i, 1)}
+                >
+                  ↓
+                </button>
+                <button
+                  type="button"
+                  className="icon danger"
+                  aria-label={`Remove ${label}`}
+                  disabled={busy}
+                  onClick={() => void act(() => removeTurn(detail.id, turn.id))}
+                >
+                  ✕
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      {detail.days.length > 0 && (
+        <form onSubmit={onAdd}>
+          <label htmlFor="add-turn">Add a Turn for…</label>
+          <div className="row">
+            <select id="add-turn" value={dayId} onChange={(e) => setDayId(e.target.value)}>
+              <option value="">Choose a Day</option>
+              {detail.days.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+            <button type="submit" disabled={busy || !dayId}>
+              Add Turn
+            </button>
+          </div>
+        </form>
+      )}
+      {error && (
+        <p role="alert" className="refusal">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
 interface DayProps {
   day: Day;
+  /** Whether the Day has at least one Turn. */
+  onRotation: boolean;
   picks: Exercise[];
   onChanged: (day: Day) => void;
+  onRotationChanged: (detail: Detail) => void;
   /** The Day changed elsewhere: reload the Routine. */
   onStale: () => Promise<void>;
 }
 
-function DayItem({ day, picks, onChanged, onStale }: DayProps) {
+function DayItem({ day, onRotation, picks, onChanged, onRotationChanged, onStale }: DayProps) {
   const id = useId();
   const [open, setOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -160,7 +292,7 @@ function DayItem({ day, picks, onChanged, onStale }: DayProps) {
       await action();
     } catch (e) {
       setError(messageOf(e));
-      if (e instanceof Refused && (e.code === 'lines_changed' || e.code === 'not_found')) await onStale();
+      if (e instanceof Refused && ['lines_changed', 'not_found', 'day_on_rotation'].includes(e.code)) await onStale();
     } finally {
       setBusy(false);
     }
@@ -201,7 +333,10 @@ function DayItem({ day, picks, onChanged, onStale }: DayProps) {
           onClick={() => setOpen(!open)}
         >
           <span className="name">{day.name}</span>
-          <span className="quiet">{count}</span>
+          <span className="quiet">
+            {count}
+            {!onRotation && ' · off the rotation'}
+          </span>
         </button>
       </div>
       {open && (
@@ -287,6 +422,27 @@ function DayItem({ day, picks, onChanged, onStale }: DayProps) {
             </form>
           ) : (
             <div className="row actions">
+              {onRotation ? (
+                <button
+                  type="button"
+                  className="secondary"
+                  aria-label={`Drop ${day.name} from the rotation`}
+                  disabled={busy}
+                  onClick={() => void act(async () => onRotationChanged(await dropDay(day.id)))}
+                >
+                  Drop from rotation
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="secondary"
+                  aria-label={`Put ${day.name} back on the rotation`}
+                  disabled={busy}
+                  onClick={() => void act(async () => onRotationChanged(await putBackDay(day.id)))}
+                >
+                  Put back
+                </button>
+              )}
               <button
                 type="button"
                 className="secondary"

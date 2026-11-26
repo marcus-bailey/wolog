@@ -87,7 +87,10 @@ function isTurn(value: unknown): value is Turn {
 }
 
 export async function getRoutine(id: number): Promise<RoutineDetail> {
-  const body = await request('GET', `routines/${id}`);
+  return expectDetail(await request('GET', `routines/${id}`));
+}
+
+function expectDetail(body: unknown): RoutineDetail {
   const routine = expectRoutine(body);
   const v = body as Record<string, unknown>;
   if (!Array.isArray(v.days) || !Array.isArray(v.rotation) || !v.rotation.every(isTurn)) {
@@ -120,4 +123,28 @@ export async function reorderLines(dayId: number, lineIds: number[]): Promise<Da
 
 export async function removeLine(dayId: number, lineId: number): Promise<Day> {
   return expectDay(await request('DELETE', `days/${dayId}/lines/${lineId}`));
+}
+
+/** Adds a Turn for the Day at the end of the rotation. A Day may have several. */
+export async function addTurn(routineId: number, dayId: number): Promise<RoutineDetail> {
+  return expectDetail(await request('POST', `routines/${routineId}/turns`, { day_id: dayId }));
+}
+
+/** Refused with `rotation_changed` unless `turnIds` names every Turn of the rotation once. */
+export async function reorderTurns(routineId: number, turnIds: number[]): Promise<RoutineDetail> {
+  return expectDetail(await request('PUT', `routines/${routineId}/turns`, { turn_ids: turnIds }));
+}
+
+export async function removeTurn(routineId: number, turnId: number): Promise<RoutineDetail> {
+  return expectDetail(await request('DELETE', `routines/${routineId}/turns/${turnId}`));
+}
+
+/** Removes all of the Day's Turns; the Day stays, off the rotation. */
+export async function dropDay(dayId: number): Promise<RoutineDetail> {
+  return expectDetail(await request('POST', `days/${dayId}/drop`));
+}
+
+/** Puts a Day that is off the rotation back on, with one Turn at the end. */
+export async function putBackDay(dayId: number): Promise<RoutineDetail> {
+  return expectDetail(await request('POST', `days/${dayId}/put-back`));
 }
