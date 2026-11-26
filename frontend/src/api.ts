@@ -27,7 +27,7 @@ function isRefusal(body: unknown): body is { code: string; message: string } {
  * then never settles, so no error flashes up while the page leaves).
  */
 export async function request(
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
   body?: unknown,
 ): Promise<unknown> {

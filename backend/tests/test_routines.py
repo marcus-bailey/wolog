@@ -266,8 +266,8 @@ def test_the_schema_lists_only_the_refusals_each_route_can_give(client: TestClie
     codes = {
         (method, path): sorted(c for c in op["responses"] if c[0] in "45")
         for path, ops in paths.items()
-        if path.startswith("/api/routines")
         for method, op in ops.items()
+        if op["tags"] == ["routines"]
     }
     assert codes == {
         ("get", "/api/routines"): [],

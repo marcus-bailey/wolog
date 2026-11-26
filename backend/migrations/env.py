@@ -3,6 +3,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import create_engine
 
+import wolog.days  # noqa: F401
 import wolog.exercises  # noqa: F401  (registers the tables on Base.metadata for autogenerate)
 import wolog.routines  # noqa: F401
 from wolog.db import Base, database_url
