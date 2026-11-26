@@ -1,0 +1,297 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Wolog Domain Model</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; a wide diagram on top, a worked week below. Three zones colored by role: Plan, Library, Record. */
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --fg: #1b1f27;
+  --muted: #5b6372;
+  --line: #c9ced8;
+  --plan: #2f5fb3;      /* Routine, Turn, Day */
+  --plan-soft: #e6edf9;
+  --lib: #a0620a;       /* Exercise */
+  --lib-soft: #fbefdc;
+  --rec: #1d7a52;       /* Session, Line, Set, Skip */
+  --rec-soft: #e2f3ea;
+  --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151b; --surface: #1a1e26; --fg: #e6e9ef; --muted: #9aa3b2; --line: #3a4150;
+    --plan: #7ea6ef; --plan-soft: #1c2840; --lib: #e3a54a; --lib-soft: #33270f;
+    --rec: #5cc794; --rec-soft: #15301f; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12151b; --surface: #1a1e26; --fg: #e6e9ef; --muted: #9aa3b2; --line: #3a4150;
+  --plan: #7ea6ef; --plan-soft: #1c2840; --lib: #e3a54a; --lib-soft: #33270f;
+  --rec: #5cc794; --rec-soft: #15301f; color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body);
+  font-size: 15px; line-height: 1.55;
+}
+.wrap {
+  max-width: 1040px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 64px;
+  display: grid; gap: 40px;
+}
+h1, h2 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
+h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.3rem; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+.lede { color: var(--muted); }
+header { display: grid; gap: 10px; }
+section { display: grid; gap: 16px; min-width: 0; }
+
+.zones { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.zone { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 12px; height: 12px; border-radius: 3px; border: 2px solid; }
+.sw.plan { border-color: var(--plan); background: var(--plan-soft); }
+.sw.lib { border-color: var(--lib); background: var(--lib-soft); }
+.sw.rec { border-color: var(--rec); background: var(--rec-soft); }
+.edge-key { display: inline-flex; align-items: center; gap: 8px; }
+.edge-key svg { width: 34px; height: 8px; }
+
+.diagram { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.diagram svg { display: block; width: 100%; min-width: 760px; height: auto; }
+svg text { font-family: var(--font-body); fill: var(--fg); }
+.bx-plan { fill: var(--plan-soft); stroke: var(--plan); stroke-width: 1.5; }
+.bx-lib  { fill: var(--lib-soft);  stroke: var(--lib);  stroke-width: 1.5; }
+.bx-rec  { fill: var(--rec-soft);  stroke: var(--rec);  stroke-width: 1.5; }
+.t-title { font-family: var(--font-display); font-weight: 700; font-size: 17px; }
+.t-plan { fill: var(--plan); } .t-lib { fill: var(--lib); } .t-rec { fill: var(--rec); }
+.t-attr { font-size: 13px; fill: var(--muted); }
+.e { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.e-pin { stroke: var(--muted); stroke-width: 1.5; fill: none; stroke-dasharray: 6 5; }
+.e-snap { stroke: var(--rec); stroke-width: 2; fill: none; stroke-dasharray: 2 5; stroke-linecap: round; }
+.lbl { font-family: var(--font-mono); font-size: 12px; fill: var(--fg);
+  paint-order: stroke; stroke: var(--surface); stroke-width: 6px; stroke-linejoin: round; }
+.lbl-snap { fill: var(--rec); font-weight: 500; }
+.ah { fill: var(--muted); }
+.ah-rec { fill: var(--rec); }
+
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.rule { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 6px; align-content: start; }
+.rule h3 { margin: 0; font-family: var(--font-display); font-size: 1rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.rule ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14px; }
+.rule.plan h3 { color: var(--plan); } .rule.lib h3 { color: var(--lib); } .rule.rec h3 { color: var(--rec); }
+
+.ring { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.turn { font-family: var(--font-mono); font-size: 13px; border: 1.5px solid var(--plan); background: var(--plan-soft);
+  border-radius: 999px; padding: 4px 12px; white-space: nowrap; }
+.turn b { color: var(--plan); font-weight: 500; }
+.ring .wraps { color: var(--muted); font-size: 13px; }
+
+.week { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; }
+.week table { width: 100%; border-collapse: collapse; min-width: 620px; font-size: 14px; }
+.week th, .week td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.week tr:last-child td { border-bottom: 0; }
+.week th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+.week td.date { font-family: var(--font-mono); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.chip { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 4px; padding: 1px 7px; margin-right: 6px; }
+.chip.session { background: var(--rec-soft); color: var(--rec); }
+.chip.skip { background: var(--rec-soft); color: var(--rec); outline: 1px dashed var(--rec); }
+.chip.rest { background: transparent; color: var(--muted); outline: 1px solid var(--line); }
+.next { font-family: var(--font-mono); font-size: 13px; color: var(--plan); white-space: nowrap; }
+.note { color: var(--muted); font-size: 13px; }
+
+.lasttime { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 10px; }
+.sets { font-family: var(--font-mono); font-size: 13px; display: grid; gap: 4px; font-variant-numeric: tabular-nums; }
+.sets .w { color: var(--muted); }
+code { font-family: var(--font-mono); font-size: 0.92em; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Wolog Domain Model</h1>
+    <p class="lede">Everything decided on the map so far, in one picture. The plan you train from is on the left, the Exercise library is in the middle, and what you actually did is on the right.</p>
+  </header>
+
+  <section>
+    <div class="zones">
+      <span class="zone"><span class="sw plan"></span>Plan: what you intend to do</span>
+      <span class="zone"><span class="sw lib"></span>Library: the movements</span>
+      <span class="zone"><span class="sw rec"></span>Record: what happened on a date</span>
+      <span class="edge-key"><svg viewBox="0 0 34 8"><line x1="0" y1="4" x2="34" y2="4" class="e"/></svg>has / belongs to</span>
+      <span class="edge-key"><svg viewBox="0 0 34 8"><line x1="0" y1="4" x2="34" y2="4" class="e-pin"/></svg>points at (pins)</span>
+      <span class="edge-key"><svg viewBox="0 0 34 8"><line x1="2" y1="4" x2="32" y2="4" class="e-snap"/></svg>Snapshot copy</span>
+    </div>
+
+    <div class="diagram" role="img" aria-label="Entity diagram: Routine has Turns and owns Days; each Turn names a Day; a Day has Lines of Exercises; a Session pins a Routine, Day and Turn, has Lines copied from the Day by Snapshot, and each Line has Sets; a Skip pins a Turn.">
+      <svg viewBox="0 0 1000 740" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+          <marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-rec"/></marker>
+        </defs>
+
+        <!-- edges first, boxes on top -->
+        <line x1="190" y1="170" x2="190" y2="248" class="e" marker-end="url(#ah)"/>
+        <text x="202" y="214" class="lbl">rotation, in order</text>
+
+        <line x1="190" y1="340" x2="190" y2="418" class="e" marker-end="url(#ah)"/>
+        <text x="202" y="384" class="lbl">names 1 Day</text>
+
+        <path d="M60,140 C18,140 18,480 58,480" class="e" marker-end="url(#ah)"/>
+        <text x="24" y="320" class="lbl" transform="rotate(-90 24 320)" text-anchor="middle">owns Days</text>
+
+        <path d="M190,530 L190,680 L368,680" class="e" marker-end="url(#ah)"/>
+        <text x="202" y="612" class="lbl">Lines, in order</text>
+
+        <line x1="500" y1="640" x2="500" y2="582" class="e" marker-end="url(#ah)"/>
+        <text x="512" y="616" class="lbl">of 1 Exercise</text>
+
+        <line x1="710" y1="98" x2="322" y2="98" class="e-pin" marker-end="url(#ah)"/>
+        <text x="515" y="88" class="lbl" text-anchor="middle">pins Routine · Day · Turn</text>
+
+        <line x1="370" y1="292" x2="322" y2="292" class="e-pin" marker-end="url(#ah)"/>
+        <text x="346" y="282" class="lbl" text-anchor="middle">pins</text>
+
+        <line x1="320" y1="452" x2="707" y2="333" class="e-snap" marker-end="url(#ahr)"/>
+        <text x="515" y="386" class="lbl lbl-snap" text-anchor="middle">Snapshot at first Set</text>
+
+        <line x1="840" y1="180" x2="840" y2="268" class="e" marker-end="url(#ah)"/>
+        <text x="852" y="228" class="lbl">Lines, in order</text>
+
+        <line x1="840" y1="360" x2="840" y2="428" class="e" marker-end="url(#ah)"/>
+        <text x="852" y="398" class="lbl">Sets, in order</text>
+
+        <line x1="710" y1="345" x2="634" y2="498" class="e" marker-end="url(#ah)"/>
+        <text x="676" y="420" class="lbl" text-anchor="middle">of 1</text>
+
+        <!-- Plan -->
+        <rect x="60" y="60" width="260" height="110" rx="8" class="bx-plan"/>
+        <text x="76" y="86" class="t-title t-plan">Routine</text>
+        <text x="76" y="110" class="t-attr">name, unique</text>
+        <text x="76" y="128" class="t-attr">exactly one is Engaged</text>
+        <text x="76" y="146" class="t-attr">rotation may be empty</text>
+
+        <rect x="60" y="250" width="260" height="90" rx="8" class="bx-plan"/>
+        <text x="76" y="276" class="t-title t-plan">Turn</text>
+        <text x="76" y="300" class="t-attr">one place in the rotation</text>
+        <text x="76" y="318" class="t-attr">keeps identity on reorder</text>
+
+        <rect x="60" y="420" width="260" height="110" rx="8" class="bx-plan"/>
+        <text x="76" y="446" class="t-title t-plan">Day</text>
+        <text x="76" y="470" class="t-attr">name, unique in its Routine</text>
+        <text x="76" y="488" class="t-attr">on rotation if it has a Turn</text>
+        <text x="76" y="506" class="t-attr">may have several Turns</text>
+
+        <rect x="370" y="640" width="260" height="80" rx="8" class="bx-plan"/>
+        <text x="386" y="666" class="t-title t-plan">Line (on a Day)</text>
+        <text x="386" y="690" class="t-attr">the planned Exercise, in order</text>
+        <text x="386" y="708" class="t-attr">same Exercise may repeat</text>
+
+        <!-- Library -->
+        <rect x="370" y="470" width="260" height="110" rx="8" class="bx-lib"/>
+        <text x="386" y="496" class="t-title t-lib">Exercise</text>
+        <text x="386" y="520" class="t-attr">name, unique</text>
+        <text x="386" y="538" class="t-attr">can be Retired, never merged</text>
+        <text x="386" y="556" class="t-attr">Last-time follows it</text>
+
+        <!-- Record -->
+        <rect x="370" y="240" width="260" height="100" rx="8" class="bx-rec"/>
+        <text x="386" y="266" class="t-title t-rec">Skip</text>
+        <text x="386" y="290" class="t-attr">date · Routine · Turn</text>
+        <text x="386" y="308" class="t-attr">a pass of the suggested Turn</text>
+        <text x="386" y="326" class="t-attr">no Session that date</text>
+
+        <rect x="710" y="60" width="260" height="120" rx="8" class="bx-rec"/>
+        <text x="726" y="86" class="t-title t-rec">Session</text>
+        <text x="726" y="110" class="t-attr">date, at most one per date</text>
+        <text x="726" y="128" class="t-attr">Routine and date never change</text>
+        <text x="726" y="146" class="t-attr">Day can be relabelled</text>
+        <text x="726" y="164" class="t-attr">exists only while it has a Set</text>
+
+        <rect x="710" y="270" width="260" height="90" rx="8" class="bx-rec"/>
+        <text x="726" y="296" class="t-title t-rec">Line (on a Session)</text>
+        <text x="726" y="320" class="t-attr">copied from the Day, then yours</text>
+        <text x="726" y="338" class="t-attr">add, omit, reorder freely</text>
+
+        <rect x="710" y="430" width="260" height="120" rx="8" class="bx-rec"/>
+        <text x="726" y="456" class="t-title t-rec">Set</text>
+        <text x="726" y="480" class="t-attr">Reps (positive whole number)</text>
+        <text x="726" y="498" class="t-attr">Weight in lb (0 = no added load)</text>
+        <text x="726" y="516" class="t-attr">Warmup or Working (default)</text>
+        <text x="726" y="534" class="t-attr">Note (optional)</text>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <h2>How the pieces connect</h2>
+    <div class="rules">
+      <div class="rule plan">
+        <h3><span class="sw plan"></span>Routine, Turn, Day</h3>
+        <ul>
+          <li>A Routine owns its Days. A Day never moves to another Routine; duplicate it instead.</li>
+          <li>The rotation is a list of Turns. Each Turn names one Day, so a Day can come up twice (A, B, A, C).</li>
+          <li>A Day with no Turns is off the rotation but still exists.</li>
+          <li>The next suggested Turn is computed from history. Nothing stores it.</li>
+        </ul>
+      </div>
+      <div class="rule rec">
+        <h3><span class="sw rec"></span>Session and Snapshot</h3>
+        <ul>
+          <li>Saving the first Set creates the Session and copies the Day's Lines into it.</li>
+          <li>After that, the Session's Lines are its own. Editing the Day later changes nothing in past Sessions.</li>
+          <li>Deleting the last Set deletes the Session.</li>
+          <li>New Sessions and Skips only go to the Engaged Routine.</li>
+        </ul>
+      </div>
+      <div class="rule lib">
+        <h3><span class="sw lib"></span>Exercise and Last-time</h3>
+        <ul>
+          <li>Day Lines and Session Lines both point at an Exercise in the library.</li>
+          <li>Last-time comes from the same Exercise in the most recent earlier Session that has a Set of it, on any Routine or Day.</li>
+          <li>Retired Exercises keep their history and their Last-time.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>One week, worked through</h2>
+    <p>Here is an example Routine called <b>PPL</b>, with a Day that appears twice on its rotation.</p>
+    <div class="ring" aria-label="Rotation of PPL">
+      <span class="turn"><b>Turn 1</b> Push</span>
+      <span class="turn"><b>Turn 2</b> Pull</span>
+      <span class="turn"><b>Turn 3</b> Push</span>
+      <span class="turn"><b>Turn 4</b> Legs</span>
+      <span class="wraps">then back to Turn 1</span>
+    </div>
+    <div class="week">
+      <table>
+        <thead><tr><th>Date</th><th>What's recorded</th><th>Pinned Turn</th><th>Next suggestion</th></tr></thead>
+        <tbody>
+          <tr><td class="date">Mon 16</td><td><span class="chip session">Session</span>Push. Saving the first Set copies Push's Lines.</td><td class="next">Turn 1</td><td class="next">Turn 2 · Pull</td></tr>
+          <tr><td class="date">Tue 17</td><td><span class="chip rest">Rest</span><span class="note">Nothing recorded. Rest doesn't advance the rotation.</span></td><td class="note">none</td><td class="next">Turn 2 · Pull</td></tr>
+          <tr><td class="date">Wed 18</td><td><span class="chip session">Session</span>Pull</td><td class="next">Turn 2</td><td class="next">Turn 3 · Push</td></tr>
+          <tr><td class="date">Thu 19</td><td><span class="chip skip">Skip</span>Passes the suggested Push.</td><td class="next">Turn 3</td><td class="next">Turn 4 · Legs</td></tr>
+          <tr><td class="date">Sat 21</td><td><span class="chip session">Session</span>Legs is suggested, but you pick Push. The Session takes Push's first Turn going forward from the cursor, which is Turn 1.</td><td class="next">Turn 1</td><td class="next">Turn 2 · Pull</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="lasttime">
+      <p><b>Last-time on Saturday, Bench Press.</b> Wednesday's Pull Session had no Bench Sets, so Last-time walks back to Monday. It shows every Set from Monday, Warmups marked, with the date:</p>
+      <div class="sets" aria-label="Example last-time Sets">
+        <span class="w">Mon 16 · Bench Press</span>
+        <span class="w">Warmup  95 lb × 10</span>
+        <span>Working 155 lb × 8</span>
+        <span>Working 155 lb × 7   "paused first rep"</span>
+      </div>
+      <p class="note">The first new Set prefills to 155 × 8, the first Working Set. Later Sets copy the previous Set on the Line. The Weight and Rep numbers are made up for this example.</p>
+    </div>
+  </section>
+</div>
+
+</body></html>
