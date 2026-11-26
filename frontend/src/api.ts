@@ -26,7 +26,11 @@ function isRefusal(body: unknown): body is { code: string; message: string } {
  * Calls the API. A 401 means the login's session ran out: go and sign in (the returned promise
  * then never settles, so no error flashes up while the page leaves).
  */
-export async function request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> {
+export async function request(
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  path: string,
+  body?: unknown,
+): Promise<unknown> {
   const res = await fetch(API_BASE + path, {
     method,
     headers: body === undefined ? {} : { 'Content-Type': 'application/json' },

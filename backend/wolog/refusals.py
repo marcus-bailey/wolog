@@ -1,6 +1,7 @@
 """Refusals: every refused action answers with a plain message saying why (spec §7)."""
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -26,4 +27,17 @@ def install(app: FastAPI) -> None:
         body = RefusalBody(code=exc.code, message=exc.message)
         return JSONResponse(status_code=exc.status, content=body.model_dump())
 
+    async def handle_invalid(_: Request, exc: Exception) -> JSONResponse:
+        """A request the API can't read (a malformed id or body) is refused in the same shape."""
+        assert isinstance(exc, RequestValidationError)
+        errors = exc.errors()
+        detail = ""
+        if errors:
+            first = errors[0]
+            where = ".".join(str(part) for part in first["loc"][1:])
+            detail = f" {where}: {first['msg']}." if where else f" {first['msg']}."
+        body = RefusalBody(code="invalid_request", message=f"That request isn’t valid.{detail}")
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content=body.model_dump())
+
     app.add_exception_handler(Refusal, handle)
+    app.add_exception_handler(RequestValidationError, handle_invalid)
