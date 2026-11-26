@@ -5,6 +5,7 @@ end of its Routine's rotation. A Day's Lines are ordered; the same Exercise may 
 a Line stays when its Exercise is Retired later. Lines are added by typing a name (spec §4.1).
 """
 
+from collections.abc import Sequence
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
@@ -130,7 +131,8 @@ def _day_out(db: Session, day: Day) -> DayOut:
     )
 
 
-def _get_routine(db: Session, routine_id: int, *, lock: bool = False) -> Routine:
+def get_routine(db: Session, routine_id: int, *, lock: bool = False) -> Routine:
+    """The Routine. Lock it to change its Days' names or its rotation: those writes run one at a time."""
     routine = db.get(Routine, routine_id, with_for_update=lock) if 1 <= routine_id <= MAX_ID else None
     if routine is None:
         raise Refusal(status.HTTP_404_NOT_FOUND, "not_found", "That Routine no longer exists.")
@@ -159,18 +161,20 @@ def _valid_name(db: Session, raw: str, routine_id: int, day: Day | None) -> str:
     return name
 
 
-def _renumber(lines: list[DayLine]) -> None:
-    for position, line in enumerate(lines):
-        line.position = position
+def renumber(items: Sequence[DayLine | Turn]) -> None:
+    """Number Lines or Turns 0, 1, 2… in this order."""
+    for position, item in enumerate(items):
+        item.position = position
 
 
-def _lines(db: Session, day: Day) -> list[DayLine]:
-    return list(db.scalars(select(DayLine).where(DayLine.day_id == day.id).order_by(DayLine.position)))
+def append_turn(db: Session, routine: Routine, day_id: int) -> None:
+    """One more Turn for the Day, at the end of the rotation. The caller holds the Routine's lock."""
+    end = db.scalar(select(func.count()).select_from(Turn).where(Turn.routine_id == routine.id)) or 0
+    db.add(Turn(routine_id=routine.id, day_id=day_id, position=end))
+    db.flush()
 
 
-@router.get("/api/routines/{routine_id}", responses=documented(404, 422))
-def routine_detail(routine_id: int, db: DbSession) -> RoutineDetail:
-    routine = _get_routine(db, routine_id)
+def detail_of(db: Session, routine: Routine) -> RoutineDetail:
     days = db.scalars(select(Day).where(Day.routine_id == routine.id).order_by(Day.id))
     turns = db.scalars(select(Turn).where(Turn.routine_id == routine.id).order_by(Turn.position))
     return RoutineDetail(
@@ -182,18 +186,25 @@ def routine_detail(routine_id: int, db: DbSession) -> RoutineDetail:
     )
 
 
+def _lines(db: Session, day: Day) -> list[DayLine]:
+    return list(db.scalars(select(DayLine).where(DayLine.day_id == day.id).order_by(DayLine.position)))
+
+
+@router.get("/api/routines/{routine_id}", responses=documented(404, 422))
+def routine_detail(routine_id: int, db: DbSession) -> RoutineDetail:
+    return detail_of(db, get_routine(db, routine_id))
+
+
 @router.post(
     "/api/routines/{routine_id}/days", status_code=status.HTTP_201_CREATED, responses=documented(404, 409, 422)
 )
 def create_day(routine_id: int, body: DayIn, db: DbSession) -> DayOut:
     """A Day with a name and no Lines, and one Turn at the end of the rotation."""
-    routine = _get_routine(db, routine_id, lock=True)
+    routine = get_routine(db, routine_id, lock=True)
     day = Day(routine_id=routine.id, name=_valid_name(db, body.name, routine.id, None))
     db.add(day)
     db.flush()
-    end = db.scalar(select(func.count()).select_from(Turn).where(Turn.routine_id == routine.id)) or 0
-    db.add(Turn(routine_id=routine.id, day_id=day.id, position=end))
-    db.flush()
+    append_turn(db, routine, day.id)
     return _day_out(db, day)
 
 
@@ -201,7 +212,7 @@ def create_day(routine_id: int, body: DayIn, db: DbSession) -> DayOut:
 def rename_day(day_id: int, body: DayIn, db: DbSession) -> DayOut:
     """Rename is a label change. A name held by another Day of the same Routine is refused."""
     day = _get_day(db, day_id)
-    _get_routine(db, day.routine_id, lock=True)
+    get_routine(db, day.routine_id, lock=True)
     day.name = _valid_name(db, body.name, day.routine_id, day)
     db.flush()
     return _day_out(db, day)
@@ -229,7 +240,7 @@ def reorder_lines(day_id: int, body: LineOrder, db: DbSession) -> DayOut:
             "lines_changed",
             "The Day’s Lines changed since you loaded them. Reload and try again.",
         )
-    _renumber([lines[i] for i in body.line_ids])
+    renumber([lines[i] for i in body.line_ids])
     db.flush()
     return _day_out(db, day)
 
@@ -242,6 +253,6 @@ def remove_line(day_id: int, line_id: int, db: DbSession) -> DayOut:
     if not any(line.id == line_id for line in lines):
         raise Refusal(status.HTTP_404_NOT_FOUND, "not_found", "That Line is no longer on the Day.")
     db.execute(delete(DayLine).where(DayLine.id == line_id))
-    _renumber([line for line in lines if line.id != line_id])
+    renumber([line for line in lines if line.id != line_id])
     db.flush()
     return _day_out(db, day)
