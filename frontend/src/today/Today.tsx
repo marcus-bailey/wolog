@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Link } from 'react-router';
+import { Link, useLocation, useNavigate } from 'react-router';
 import { messageOf, Refused } from '../api';
 import { localToday, shownDate } from '../dates';
 import { getDay, getRoutine } from '../routines/api';
@@ -57,15 +57,26 @@ let draftKeys = 0;
  * Session from the screen's Lines. A date that has a Session (whatever its Routine) opens that
  * Session, which stays editable: every change is written as the Session's whole post-state. A write
  * that leaves no Set, or Delete Session, erases it and goes back to Up next.
+ *
+ * `on` opens the Session on that date instead (from History); leaving it comes back to today.
  */
-export function Today() {
+export function Today({ on: opened }: { on?: string } = {}) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  /** Leave a Session opened from History for a fresh Today, saying why when there's a reason. */
+  const leaveOpened = (why?: string) => navigate('/', { replace: true, state: why ? { notice: why } : null });
   const { routines, reload: reloadRoutines } = useRoutines();
   const engagedId = routines?.find((r) => r.engaged)?.id;
   const [upNext, setUpNext] = useState<UpNext | null>(null);
   const [logging, setLogging] = useState<Logging | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(() => {
+    const state: unknown = location.state;
+    return typeof state === 'object' && state !== null && 'notice' in state && typeof state.notice === 'string'
+      ? state.notice
+      : null;
+  });
   /** Pick another Day: the rotation's Days while choosing, and the Day picked over the suggestion. */
   const [rotationDays, setRotationDays] = useState<PickedDay[] | null>(null);
   const [picked, setPicked] = useState<PickedDay | null>(null);
@@ -83,7 +94,7 @@ export function Today() {
   useEffect(() => {
     let current = true;
     const open = loggingRef.current;
-    const on = open?.kind === 'draft' ? open.date : open?.kind === 'session' ? open.session.date : today;
+    const on = open?.kind === 'draft' ? open.date : open?.kind === 'session' ? open.session.date : (opened ?? today);
     Promise.all([getUpNext(), getSessionOn(on)])
       .then(async ([next, session]) => {
         const reopened = session
@@ -92,6 +103,10 @@ export function Today() {
             ? await draftOn(next, on)
             : null;
         if (!current) return;
+        if (opened !== undefined && !session) {
+          leaveOpened(`There is no Session on ${shownDate(opened, today)} any more.`);
+          return;
+        }
         setUpNext(next);
         setPicked(null);
         setRotationDays(null);
@@ -102,7 +117,9 @@ export function Today() {
     return () => {
       current = false;
     };
-  }, [engagedId, today]);
+    // leaveOpened is the same navigation every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engagedId, today, opened]);
 
   async function act(action: () => Promise<UpNext>) {
     setBusy(true);
@@ -150,6 +167,10 @@ export function Today() {
   }
 
   async function onClose() {
+    if (opened !== undefined) {
+      leaveOpened();
+      return;
+    }
     setError(null);
     try {
       const session = await getSessionOn(today);
@@ -186,6 +207,7 @@ export function Today() {
         setLogging({ kind: 'session', session: after });
         if (dayId !== undefined) showUpNext(await getUpNext()); // the re-pinned Turn may move the cursor
       } else {
+        if (opened !== undefined) return leaveOpened('The Session is gone: it had no Sets left.');
         setLogging(null);
         setNotice('The Session is gone: it had no Sets left.');
         showUpNext(await getUpNext());
@@ -262,6 +284,7 @@ export function Today() {
       const id = logging.session.id;
       return attempt(async () => {
         await deleteSession(id);
+        if (opened !== undefined) return leaveOpened('Session deleted.');
         setLogging(null);
         setNotice('Session deleted.');
         showUpNext(await getUpNext());

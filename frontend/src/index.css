@@ -588,3 +588,34 @@ button.notes-toggle {
   color: var(--muted);
   white-space: normal;
 }
+
+/* History (spec §4.9): Session rows open the Session; Skip rows read as passes. */
+.history-row a,
+.history-row.skip {
+  display: grid;
+  grid-template-columns: 7.5rem 1fr;
+  gap: 0 0.75rem;
+  color: var(--fg);
+  text-decoration: none;
+}
+.list li.history-row {
+  padding: 0;
+}
+.history-row a {
+  padding: 0.875rem 0;
+}
+.history-row.skip {
+  padding: 0.625rem 0;
+  color: var(--muted);
+}
+.history-date {
+  grid-row: span 2;
+  font-variant-numeric: tabular-nums;
+}
+.history-day {
+  font-weight: 600;
+}
+.history-row.skip .history-day {
+  font-weight: 400;
+  font-style: italic;
+}
