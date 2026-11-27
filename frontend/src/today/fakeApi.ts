@@ -29,6 +29,7 @@ interface FakeSession {
   routine: { id: number; name: string };
   day: { id: number; name: string };
   turn_id: number;
+  version: number;
   lines: { id: number; exercise: { id: number; name: string; retired: boolean }; sets: FakeSet[] }[];
 }
 
@@ -38,13 +39,17 @@ interface FakeSession {
  * the first. A first save is refused if the Engaged Routine, the suggestion or the date's Session
  * changed, as the API does.
  */
-export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = []) {
+export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = [], retired: string[] = []) {
   let nextId = 1000;
   const exerciseIds = new Map<string, number>();
-  const exercise = (name: string) => {
-    if (!exerciseIds.has(name)) exerciseIds.set(name, exerciseIds.size + 1);
-    return { id: exerciseIds.get(name)!, name, retired: false };
+  const exercise = (typed: string) => {
+    const name = typed.trim().replace(/\s+/g, ' ');
+    const known = [...exerciseIds.keys()].find((n) => n.toLowerCase() === name.toLowerCase()) ?? name;
+    if (!exerciseIds.has(known)) exerciseIds.set(known, exerciseIds.size + 1);
+    return { id: exerciseIds.get(known)!, name: known, retired: retired.includes(known) };
   };
+  const retiredRefusal = (name: string) =>
+    json(409, { code: 'name_retired', message: `“${name}” is a Retired Exercise. Un-retire it to use it again.` });
   const turnId = (r: FakeRoutine, i: number) => r.id * 100 + i;
   const dayLines = (r: FakeRoutine, i: number) =>
     (r.lines?.[r.turns[i]!] ?? []).map((name, j) => ({ id: turnId(r, i) * 10 + j, exercise: exercise(name) }));
@@ -100,6 +105,9 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
       const r = routines.find((x) => x.id === Math.floor(id / 100))!;
       return json(200, { id, name: r.turns[id % 100], lines: dayLines(r, id % 100) });
     }
+    if (path.startsWith('exercises')) {
+      return json(200, [...exerciseIds.keys()].map(exercise).filter((e) => !e.retired));
+    }
     const on = /^sessions\/on\/(.+)$/.exec(path);
     if (on) return json(200, sessions.find((s) => s.date === on[1]) ?? null);
     const r = routines.find((x) => x.engaged)!;
@@ -116,15 +124,19 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
       }
       const index = (body.turn_id as number) % 100;
       const lines = dayLines(r, index);
+      const given = body.lines as { day_line_id?: number; name?: string; sets: Omit<FakeSet, 'id'>[] }[];
+      const bad = given.find((l) => l.name !== undefined && exercise(l.name).retired);
+      if (bad) return retiredRefusal(exercise(bad.name!).name);
       const session: FakeSession = {
         id: nextId++,
         date: body.date as string,
         routine: { id: r.id, name: r.name },
         day: { id: turnId(r, index), name: r.turns[index]! },
         turn_id: body.turn_id as number,
-        lines: (body.lines as { day_line_id: number; sets: Omit<FakeSet, 'id'>[] }[]).map((l) => ({
+        version: 1,
+        lines: given.map((l) => ({
           id: nextId++,
-          exercise: lines.find((dl) => dl.id === l.day_line_id)!.exercise,
+          exercise: l.name !== undefined ? exercise(l.name) : lines.find((dl) => dl.id === l.day_line_id)!.exercise,
           sets: withIds(l.sets),
         })),
       };
@@ -133,11 +145,29 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
       return json(201, session);
     }
     const write = /^sessions\/(\d+)$/.exec(path);
-    if (method === 'PUT' && write) {
+    if (write) {
       const session = sessions.find((s) => s.id === Number(write[1]));
       if (!session) return json(404, { code: 'not_found', message: 'That Session no longer exists.' });
-      const given = body.lines as { id: number; sets: (Omit<FakeSet, 'id'> & { id?: number })[] }[];
-      session.lines = given.map((l) => ({ ...session.lines.find((x) => x.id === l.id)!, sets: withIds(l.sets) }));
+      if (method === 'DELETE') {
+        sessions.splice(sessions.indexOf(session), 1);
+        return new Response(null, { status: 204 });
+      }
+      if (body.version !== session.version) {
+        return json(409, { code: 'session_changed', message: 'This Session changed since you loaded it. Reload and try again.' });
+      }
+      const given = body.lines as { id?: number; name?: string; sets: (Omit<FakeSet, 'id'> & { id?: number })[] }[];
+      const bad = given.find((l) => l.name !== undefined && exercise(l.name).retired);
+      if (bad) return retiredRefusal(exercise(bad.name!).name);
+      if (!given.some((l) => l.sets.length > 0)) {
+        sessions.splice(sessions.indexOf(session), 1);
+        return json(200, null);
+      }
+      session.lines = given.map((l) =>
+        l.id !== undefined
+          ? { ...session.lines.find((x) => x.id === l.id)!, sets: withIds(l.sets) }
+          : { id: nextId++, exercise: exercise(l.name!), sets: withIds(l.sets) },
+      );
+      session.version += 1;
       return json(200, session);
     }
     if (method === 'POST' && path === 'skips') {

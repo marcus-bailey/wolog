@@ -10,6 +10,13 @@ Session pins the suggestion as it stood before. At most one Session per date acr
 
 **Writes are post-state.** The client sends the resulting Lines and Sets and the API validates the
 whole; an illegal result is refused with nothing applied. A result with no Set erases the Session.
+Every write names the version it was made from, so a screen that missed another write is refused
+rather than dropping what it didn't see.
+
+Always editable, whatever the Engaged Routine (spec §4.5): Sets are added (appended), edited,
+deleted and reordered within their Line, never moved across Lines; Lines are added by typing a name
+(attach or create, as on a Day; Retired refused; repeats allowed) and append; a Line is removed only
+while it has no Sets.
 """
 
 import datetime as dt
@@ -88,10 +95,12 @@ class SetIn(BaseModel):
 
 class NewLineIn(BaseModel):
     """A Line of a new Session: the copy of one of the Day's Lines (`day_line_id`), or an extra Line of
-    an Exercise (`exercise_id`). Exactly one of the two."""
+    an Exercise, by id (`exercise_id`) or by the name typed (`name`: a live Exercise's name attaches
+    it, a new name creates it). Exactly one of the three."""
 
     day_line_id: int | None = None
     exercise_id: int | None = None
+    name: str | None = None
     sets: list[SetIn] = []
 
 
@@ -109,17 +118,20 @@ class SessionCreate(BaseModel):
 
 
 class LineIn(BaseModel):
-    """A Line of a saved Session: `id` names one of its Lines; leave it out (and give `exercise_id`)
-    for a new Line, which appends."""
+    """A Line of a saved Session: `id` names one of its Lines. A new Line leaves it out and gives its
+    Exercise by `exercise_id` or by the `name` typed; new Lines come after the saved ones."""
 
     id: int | None = None
     exercise_id: int | None = None
+    name: str | None = None
     sets: list[SetIn] = []
 
 
 class SessionWrite(BaseModel):
-    """The resulting Lines of the Session, in order, each with its Sets in order."""
+    """The resulting Lines of the Session, in order, each with its Sets in order. `version` is the
+    Session's version the screen was showing."""
 
+    version: int
     lines: list[LineIn]
 
 
@@ -154,6 +166,7 @@ class SessionOut(BaseModel):
     routine: Named
     day: Named
     turn_id: int | None
+    version: int
     lines: list[SessionLineOut]
 
 
@@ -185,6 +198,7 @@ def _session_out(db: Session, record: SessionRecord) -> SessionOut:
         routine=Named(id=routine.id, name=routine.name),
         day=Named(id=day.id, name=day.name),
         turn_id=record.turn_id,
+        version=record.version,
         lines=[SessionLineOut(id=line.id, exercise=exercises.exercise_out(e), sets=sets[line.id]) for line, e in lines],
     )
 
@@ -224,6 +238,17 @@ def _new_exercises(db: Session, ids: Iterable[int]) -> dict[int, Exercise]:
                 "exercise_retired",
                 f"“{e.name}” is a Retired Exercise. Un-retire it to add it as a new Line.",
             )
+    return found
+
+
+def _line_exercises(db: Session, ids: Iterable[int | None], names: Iterable[str | None]) -> dict[int | str, int]:
+    """The Exercise id of each new Line, keyed by the id or the name given. Ids must name live
+    Exercises; names attach a live Exercise or create one (spec §4.1). Either way a Retired Exercise is
+    refused. Creating one here only adds it to the library."""
+    found: dict[int | str, int] = {i: i for i in _new_exercises(db, (i for i in ids if i is not None))}
+    for name in names:
+        if name is not None and name not in found:
+            found[name] = exercises.attach_by_name(db, name).id
     return found
 
 
@@ -311,7 +336,7 @@ def create_session(body: SessionCreate, db: DbSession) -> SessionOut:
         )
     used: set[int] = set()
     for line in body.lines:
-        if (line.day_line_id is None) == (line.exercise_id is None):
+        if sum(x is not None for x in (line.day_line_id, line.exercise_id, line.name)) != 1:
             raise Refusal(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 "invalid_request",
@@ -325,15 +350,19 @@ def create_session(body: SessionCreate, db: DbSession) -> SessionOut:
                     f"The Lines of {day.name} changed since you opened it. Check them and try again.",
                 )
             used.add(line.day_line_id)
-    extra = _new_exercises(db, (line.exercise_id for line in body.lines if line.exercise_id is not None))
+    extra = _line_exercises(db, (line.exercise_id for line in body.lines), (line.name for line in body.lines))
 
     db.execute(delete(Skip).where(Skip.routine_id == routine.id, Skip.date == body.date))
     record = SessionRecord(date=body.date, routine_id=routine.id, day_id=day.id, turn_id=suggested.turn_id)
     db.add(record)
     db.flush()
     for position, line in enumerate(body.lines):
-        exercise_id = day_lines[line.day_line_id].exercise_id if line.day_line_id is not None else line.exercise_id
-        assert exercise_id is not None and (line.day_line_id is not None or exercise_id in extra)
+        if line.day_line_id is not None:
+            exercise_id = day_lines[line.day_line_id].exercise_id
+        else:
+            key = line.exercise_id if line.exercise_id is not None else line.name
+            assert key is not None
+            exercise_id = extra[key]
         row = SessionLine(session_id=record.id, exercise_id=exercise_id, position=position)
         db.add(row)
         db.flush()
@@ -350,6 +379,8 @@ def write_session(session_id: int, body: SessionWrite, db: DbSession) -> Session
     record = db.get(SessionRecord, session_id, with_for_update=True) if 1 <= session_id <= MAX_ID else None
     if record is None:
         raise Refusal(status.HTTP_404_NOT_FOUND, "not_found", "That Session no longer exists.")
+    if body.version != record.version:
+        raise _changed()
     for line in body.lines:
         for s in line.sets:
             _set_values(s)
@@ -372,9 +403,19 @@ def write_session(session_id: int, body: SessionWrite, db: DbSession) -> Session
                     "invalid_request",
                     "A Line keeps its Exercise. Add a new Line for another Exercise.",
                 )
+            if line.name is not None:
+                raise Refusal(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    "invalid_request",
+                    "A Line keeps its Exercise. Add a new Line for another Exercise.",
+                )
             seen_lines.add(line.id)
-        elif line.exercise_id is None:
-            raise Refusal(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_request", "A new Line needs an Exercise.")
+        elif (line.exercise_id is None) == (line.name is None):
+            raise Refusal(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "invalid_request",
+                "A new Line needs an Exercise, by id or by name.",
+            )
         for s in line.sets:
             if s.id is None:
                 continue
@@ -385,6 +426,16 @@ def write_session(session_id: int, body: SessionWrite, db: DbSession) -> Session
                     status.HTTP_409_CONFLICT, "set_moved", "Sets never move across Lines. Delete it and save it again."
                 )
             seen_sets.add(s.id)
+    kept = [line.id for line in body.lines if line.id is not None]
+    first_new = next((i for i, line in enumerate(body.lines) if line.id is None), len(body.lines))
+    if kept != sorted(kept, key=lambda i: saved_lines[i].position) or any(
+        line.id is not None for line in body.lines[first_new:]
+    ):
+        raise Refusal(
+            status.HTTP_409_CONFLICT,
+            "lines_reordered",
+            "A Session’s Lines keep their order, and a new Line goes at the end.",
+        )
     for gone in set(saved_lines) - seen_lines:
         if saved_sets[gone]:
             raise Refusal(
@@ -392,12 +443,12 @@ def write_session(session_id: int, body: SessionWrite, db: DbSession) -> Session
                 "line_has_sets",
                 "A Line can be removed only while it has no Sets. Delete its Sets first.",
             )
-    extra = _new_exercises(db, (line.exercise_id for line in body.lines if line.id is None and line.exercise_id))
-
     if not any(line.sets for line in body.lines):  # dissolve: no Set left, no Session
         db.delete(record)
         db.flush()
         return None
+    new = [line for line in body.lines if line.id is None]
+    extra = _line_exercises(db, (line.exercise_id for line in new), (line.name for line in new))
 
     for gone in set(saved_lines) - seen_lines:
         db.delete(saved_lines[gone])
@@ -406,10 +457,23 @@ def write_session(session_id: int, body: SessionWrite, db: DbSession) -> Session
             row = saved_lines[line.id]
             row.position = position
         else:
-            assert line.exercise_id in extra
-            row = SessionLine(session_id=record.id, exercise_id=line.exercise_id, position=position)
+            key = line.exercise_id if line.exercise_id is not None else line.name
+            assert key is not None
+            row = SessionLine(session_id=record.id, exercise_id=extra[key], position=position)
             db.add(row)
             db.flush()
         _write_sets(db, row, line.sets, saved_sets.get(row.id, {}))
+    record.version += 1
     db.flush()
     return _session_out(db, record)
+
+
+@router.delete("/api/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT, responses=documented(404, 422))
+def delete_session(session_id: int, db: DbSession) -> None:
+    """Delete the Session with its Lines and Sets. Skips it replaced are not restored, and later Skips
+    stay. Logging that date again creates a new Session."""
+    record = db.get(SessionRecord, session_id, with_for_update=True) if 1 <= session_id <= MAX_ID else None
+    if record is None:
+        raise Refusal(status.HTTP_404_NOT_FOUND, "not_found", "That Session no longer exists.")
+    db.delete(record)
+    db.flush()

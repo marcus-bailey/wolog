@@ -501,3 +501,43 @@ button.save-set {
 .line-nav button {
   flex: 1;
 }
+button.chip.add {
+  color: var(--accent);
+  border-style: dashed;
+}
+.sets li {
+  display: contents;
+}
+button.chip.set {
+  min-height: 44px;
+  font-weight: 500;
+  color: var(--fg);
+  background: transparent;
+}
+button.chip.set.warmup {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+button.chip.set[aria-expanded='true'] {
+  outline: 2px solid var(--accent);
+}
+.sheet,
+.add-line {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.5rem 0 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.sheet h4 {
+  margin: 0;
+}
+.sheet label,
+.add-line label {
+  color: var(--muted);
+}
+.session-end {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}

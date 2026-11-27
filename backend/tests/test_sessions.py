@@ -100,7 +100,8 @@ def on(client: TestClient, date: str | None = None) -> dict[str, Any] | None:
 
 
 def write(client: TestClient, session: dict[str, Any], lines: list[dict[str, Any]]) -> httpx2.Response:
-    return client.put(f"/api/sessions/{session['id']}", json={"lines": lines})
+    """Write this post-state from the version the screen was showing."""
+    return client.put(f"/api/sessions/{session['id']}", json={"version": session["version"], "lines": lines})
 
 
 def post_state(session: dict[str, Any]) -> list[dict[str, Any]]:
@@ -545,7 +546,7 @@ def test_saving_the_next_set_appends_it(client: TestClient) -> None:
 def test_an_unchanged_post_state_changes_nothing(client: TestClient) -> None:
     Routine(client, Push=["Bench Press", "Dips"])
     session = started(client)
-    assert ok(write(client, session, post_state(session))) == session
+    assert ok(write(client, session, post_state(session))) == {**session, "version": session["version"] + 1}
 
 
 def test_one_invalid_set_refuses_the_whole_write(client: TestClient) -> None:
@@ -658,6 +659,221 @@ def test_an_exercise_on_a_session_line_cannot_be_deleted_even_an_empty_line(clie
     refused(client.delete(f"/api/exercises/{dips['exercise']['id']}"), 409, "exercise_in_use")
 
 
+# Editing a Session (LOG-3, LOG-4, LOG-6)
+
+
+def test_any_field_of_a_set_can_be_edited(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press"])
+    session = started(client, sets={0: [a_set(5, "135")]})
+    lines = post_state(session)
+    lines[0]["sets"][0].update(reps=3, weight="137.5", warmup=True, note="paused")
+    after = ok(write(client, session, lines))
+    edited = after["lines"][0]["sets"][0]
+    assert edited == {"id": lines[0]["sets"][0]["id"], "reps": 3, "weight": "137.5", "warmup": True, "note": "paused"}
+    lines = post_state(after)
+    lines[0]["sets"][0].update(warmup=False, note="")
+    assert ok(write(client, after, lines))["lines"][0]["sets"][0]["note"] is None
+
+
+@pytest.mark.parametrize(("field", "value", "code"), [("reps", 0, "reps_invalid"), ("weight", "-5", "weight_invalid")])
+def test_an_invalid_edit_is_refused_and_changes_nothing(client: TestClient, field: str, value: Any, code: str) -> None:
+    Routine(client, Push=["Bench Press"])
+    session = started(client)
+    lines = post_state(session)
+    lines[0]["sets"][0][field] = value
+    refused(write(client, session, lines), 422, code)
+    assert on(client) == session
+
+
+def test_sets_reorder_within_their_line_and_new_sets_append(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press"])
+    session = started(client, sets={0: [a_set(5, "100"), a_set(5, "110"), a_set(5, "120")]})
+    lines = post_state(session)
+    lines[0]["sets"].reverse()
+    after = ok(write(client, session, lines))
+    assert shape(after) == [("Bench Press", ["120×5", "110×5", "100×5"])]
+    lines = post_state(after)
+    lines[0]["sets"].append(a_set(3, "130"))
+    assert shape(ok(write(client, after, lines))) == [("Bench Press", ["120×5", "110×5", "100×5", "130×3"])]
+
+
+def test_deleting_a_set_leaves_the_others(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press"])
+    session = started(client, sets={0: [a_set(5, "100"), a_set(5, "110")]})
+    lines = post_state(session)
+    del lines[0]["sets"][0]
+    assert shape(ok(write(client, session, lines))) == [("Bench Press", ["110×5"])]
+
+
+def test_removing_the_last_set_of_one_line_leaves_it_empty(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press", "Dips"])
+    session = started(client, sets={0: [a_set()], 1: [a_set(10, "0")]})
+    lines = post_state(session)
+    lines[1]["sets"] = []
+    assert shape(ok(write(client, session, lines))) == [("Bench Press", ["135×5"]), ("Dips", [])]
+
+
+def test_a_line_is_added_by_typing_a_name_attaching_or_creating(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press"])
+    session = started(client)
+    lines = post_state(session)
+    lines += [{"name": "  bench   press "}, {"name": "Cable  Flyes", "sets": [a_set(12, "20")]}]
+    after = ok(write(client, session, lines))
+    assert shape(after) == [("Bench Press", ["135×5"]), ("Bench Press", []), ("Cable Flyes", ["20×12"])]
+    assert after["lines"][1]["exercise"]["id"] == after["lines"][0]["exercise"]["id"]
+    library = [e["name"] for e in ok(client.get("/api/exercises"))]
+    assert library == ["Bench Press", "Cable Flyes"]
+
+
+def test_a_line_can_be_added_by_exercise_id(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press"])
+    curls = ok(client.post("/api/exercises", json={"name": "Curls"}), 201)["id"]
+    session = started(client)
+    after = ok(write(client, session, [*post_state(session), {"exercise_id": curls}]))
+    assert shape(after)[-1] == ("Curls", [])
+
+
+def test_creating_an_exercise_on_a_session_adds_it_to_no_day(client: TestClient) -> None:
+    ppl = Routine(client, Push=["Bench Press"])
+    session = started(client)
+    ok(write(client, session, [*post_state(session), {"name": "Curls"}]))
+    assert [line["exercise"]["name"] for line in day_lines(client, ppl.day["Push"])] == ["Bench Press"]
+
+
+def test_a_new_line_cannot_pick_a_retired_exercise(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press"])
+    old = ok(client.post("/api/exercises", json={"name": "Old"}), 201)["id"]
+    ok(client.patch(f"/api/exercises/{old}", json={"retired": True}))
+    session = started(client)
+    assert "Retired" in refused(write(client, session, [*post_state(session), {"name": "old"}]), 409, "name_retired")
+    refused(write(client, session, [*post_state(session), {"exercise_id": old}]), 409, "exercise_retired")
+    refused(write(client, session, [*post_state(session), {"name": "  "}]), 422, "name_empty")
+    assert on(client) == session
+
+
+def test_a_refused_write_does_not_create_the_exercise_it_named(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press"])
+    session = started(client)
+    lines = [*post_state(session), {"name": "Curls", "sets": [a_set(0)]}]
+    refused(write(client, session, lines), 422, "reps_invalid")
+    lines = post_state(session)
+    lines[0]["sets"][0]["reps"] = 0
+    refused(write(client, session, [*lines, {"name": "Curls"}]), 422, "reps_invalid")
+    assert [e["name"] for e in ok(client.get("/api/exercises"))] == ["Bench Press"]
+
+
+def test_a_new_line_names_its_exercise_once(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press"])
+    session = started(client)
+    bench = session["lines"][0]["exercise"]["id"]
+    for line in [{}, {"exercise_id": bench, "name": "Bench Press"}]:
+        refused(write(client, session, [*post_state(session), line]), 422, "invalid_request")
+    with_name = [{**post_state(session)[0], "name": "Curls"}]
+    refused(write(client, session, with_name), 422, "invalid_request")
+
+
+def test_new_lines_append_and_lines_keep_their_order(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press", "Dips"])
+    session = started(client)
+    lines = post_state(session)
+    refused(write(client, session, [lines[1], lines[0]]), 409, "lines_reordered")
+    refused(write(client, session, [lines[0], {"name": "Curls"}, lines[1]]), 409, "lines_reordered")
+    assert on(client) == session
+
+
+def test_an_empty_line_can_be_removed_and_stays_until_it_is(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press", "Dips", "Flyes"])
+    session = started(client)
+    lines = post_state(session)
+    after = ok(write(client, session, [lines[0], lines[2]]))
+    assert shape(after) == [("Bench Press", ["135×5"]), ("Flyes", [])]
+
+
+def test_a_write_saving_a_set_on_a_line_and_removing_that_line_is_refused(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press", "Dips"])
+    session = started(client)
+    lines = post_state(session)
+    # Elsewhere, a Set is saved on Dips; this screen still shows Dips empty and removes it.
+    elsewhere = post_state(session)
+    elsewhere[1]["sets"] = [a_set(10, "0")]
+    ok(write(client, session, elsewhere))
+    refused(write(client, session, [lines[0]]), 409, "session_changed")
+    current = on(client)
+    assert current is not None
+    refused(write(client, current, post_state(current)[:1]), 409, "line_has_sets")
+    # Removing its Sets and the Line in one write is refused too: a Line goes only while it has none.
+    emptied = post_state(current)
+    emptied[1]["sets"] = []
+    refused(write(client, current, emptied[:1]), 409, "line_has_sets")
+
+
+def test_a_write_from_an_older_version_is_refused(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press"])
+    session = started(client)
+    lines = post_state(session)
+    lines[0]["sets"].append(a_set(5, "140"))
+    current = ok(write(client, session, lines))
+    stale = post_state(session)
+    stale[0]["sets"].append(a_set(5, "145"))
+    assert "changed since you loaded it" in refused(write(client, session, stale), 409, "session_changed")
+    assert on(client) == current
+
+
+def test_a_session_stays_editable_after_switching_routines(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press", "Dips"])
+    session = started(client, days_ago(1))
+    Routine(client, "Upper Lower", Upper=["Rows"]).engage()
+    lines = post_state(session)
+    lines[0]["sets"][0]["reps"] = 6
+    after = ok(write(client, session, [lines[0], {"name": "Curls"}]))
+    assert shape(after) == [("Bench Press", ["135×6"]), ("Curls", [])]
+    assert client.delete(f"/api/sessions/{session['id']}").status_code == 204
+
+
+def test_deleting_the_session_erases_it_even_with_empty_lines(client: TestClient, engine: Engine) -> None:
+    Routine(client, Push=["Bench Press", "Dips"])
+    session = started(client)
+    assert client.delete(f"/api/sessions/{session['id']}").status_code == 204
+    assert on(client) is None
+    assert count(engine, "session_line") == 0
+    assert count(engine, "session_set") == 0
+    refused(client.delete(f"/api/sessions/{session['id']}"), 404, "not_found")
+    refused(write(client, session, post_state(session)), 404, "not_found")
+    assert started(client)["id"] != session["id"]
+
+
+def test_a_write_leaving_no_set_erases_the_session_even_with_empty_lines(client: TestClient) -> None:
+    Routine(client, Push=["Bench Press", "Dips"])
+    session = started(client)
+    lines = post_state(session)
+    lines[0]["sets"] = []
+    assert ok(write(client, session, [*lines, {"name": "Curls"}])) is None
+    assert on(client) is None
+    assert [e["name"] for e in ok(client.get("/api/exercises"))] == ["Bench Press", "Dips"]
+
+
+def test_deleting_a_session_does_not_restore_its_skips_or_remove_later_ones(client: TestClient, engine: Engine) -> None:
+    Routine(client, Push=["Bench Press"], Pull=["Rows"], Legs=["Squat"])
+    ok(client.post("/api/skips", json={**_skip_body(client), "date": days_ago(2)}), 201)  # Push
+    session = started(client, days_ago(2))  # replaces the Skip; pins Pull
+    ok(client.post("/api/skips", json={**_skip_body(client), "date": days_ago(1)}), 201)  # Legs
+    assert client.delete(f"/api/sessions/{session['id']}").status_code == 204
+    with engine.connect() as conn:
+        left = conn.execute(text("select date from skip order by date")).scalars().all()
+    assert [d.isoformat() for d in left] == [days_ago(1)]
+    assert suggested(client) == "Push"  # after the later Skip of Legs, wrapping
+
+
+def test_dissolving_a_session_does_not_restore_its_skips(client: TestClient, engine: Engine) -> None:
+    Routine(client, Push=["Bench Press"], Pull=["Rows"])
+    ok(client.post("/api/skips", json=_skip_body(client)), 201)
+    session = started(client)
+    lines = post_state(session)
+    lines[0]["sets"] = []
+    assert ok(write(client, session, lines)) is None
+    assert count(engine, "skip") == 0
+
+
 # Refusal shapes
 
 
@@ -673,4 +889,5 @@ def test_the_schema_lists_only_the_refusals_each_route_can_give(client: TestClie
         ("get", "/api/sessions/on/{date}"): ["422"],
         ("post", "/api/sessions"): ["404", "409", "422"],
         ("put", "/api/sessions/{session_id}"): ["404", "409", "422"],
+        ("delete", "/api/sessions/{session_id}"): ["404", "422"],
     }
