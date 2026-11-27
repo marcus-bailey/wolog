@@ -21,6 +21,7 @@ export function fakeRoutinesApi(initial: Routine[] = []) {
     const body = init?.body ? (JSON.parse(init.body as string) as { name: string }) : null;
     if (method === 'GET' && path === 'routines') return json(200, routines);
     if (method === 'GET' && path.startsWith('exercises')) return json(200, []);
+    if (method === 'GET' && path.startsWith('sessions/on/')) return json(200, null);
     if (method === 'GET' && path === 'up-next') {
       // These Routines have no Days: an empty rotation, so no suggestion and no Skips.
       const engaged = routines.find((r) => r.engaged);

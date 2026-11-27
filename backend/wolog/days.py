@@ -201,6 +201,15 @@ def routine_detail(routine_id: int, db: DbSession) -> RoutineDetail:
     return detail_of(db, get_routine(db, routine_id))
 
 
+@router.get("/api/days/{day_id}", responses=documented(404, 422))
+def day_detail(day_id: int, db: DbSession) -> DayOut:
+    """The Day with its Lines in order."""
+    day = db.get(Day, day_id) if 1 <= day_id <= MAX_ID else None
+    if day is None:
+        raise Refusal(status.HTTP_404_NOT_FOUND, "not_found", "That Day no longer exists.")
+    return _day_out(db, day)
+
+
 @router.post(
     "/api/routines/{routine_id}/days", status_code=status.HTTP_201_CREATED, responses=documented(404, 409, 422)
 )

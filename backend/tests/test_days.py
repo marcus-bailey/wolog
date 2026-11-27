@@ -376,6 +376,7 @@ def test_the_schema_lists_only_the_refusals_each_route_can_give(client: TestClie
     }
     assert codes == {
         ("get", "/api/routines/{routine_id}"): ["404", "422"],
+        ("get", "/api/days/{day_id}"): ["404", "422"],
         ("post", "/api/routines/{routine_id}/days"): ["404", "409", "422"],
         ("patch", "/api/days/{day_id}"): ["404", "409", "422"],
         ("post", "/api/days/{day_id}/lines"): ["404", "409", "422"],
