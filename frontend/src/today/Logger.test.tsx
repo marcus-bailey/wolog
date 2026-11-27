@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { AppRoutes } from '../App';
@@ -56,7 +56,7 @@ it('Start only opens the Lines in the logger; nothing is saved', async () => {
 
   expect(logger.getByRole('heading', { name: 'Push' })).toBeInTheDocument();
   const strip = within(logger.getByRole('navigation', { name: 'Lines' }));
-  expect(strip.getAllByRole('button').map((b) => b.textContent)).toEqual(['Bench Press 0', 'Dips 0']);
+  expect(strip.getAllByRole('button').map((b) => b.textContent)).toEqual(['Bench Press 0', 'Dips 0', '+ Line']);
   expect(logger.getByRole('heading', { name: 'Bench Press' })).toBeInTheDocument();
   expect(logger.getByLabelText('Date')).toHaveValue(localToday());
   expect(logger.getByLabelText('Date')).toHaveAttribute('max', localToday());
@@ -95,7 +95,7 @@ it('the first Set creates the Session from the Day’s Lines, pinning the sugges
   expect(sessions).toHaveLength(1);
 
   const sets = within(logger.getByRole('list', { name: 'Today’s Sets' }));
-  const chip = sets.getByRole('listitem');
+  const chip = sets.getByRole('button');
   expect(chip).toHaveTextContent(/^45 × 8 Warmup\s*• Note$/);
   expect(chip).toHaveClass('warmup');
   // Weight and Reps stay; the mark resets to Working and the Note to blank.
@@ -224,6 +224,7 @@ it('opening Today on a date with a Session opens that Session', async () => {
         routine: { id: 1, name: 'PPL' },
         day: { id: 101, name: 'Pull' },
         turn_id: 101,
+        version: 1,
         lines: [{ id: 6, exercise: { id: 9, name: 'Rows', retired: false }, sets: [{ id: 7, reps: 10, weight: '95', warmup: false, note: null }] }],
       },
     ],
@@ -245,6 +246,7 @@ it('changing the logger’s date to one with a Session opens that Session', asyn
         routine: { id: 1, name: 'PPL' },
         day: { id: 101, name: 'Pull' },
         turn_id: 101,
+        version: 1,
         lines: [{ id: 6, exercise: { id: 9, name: 'Rows', retired: false }, sets: [] }],
       },
     ],
@@ -258,9 +260,210 @@ it('changing the logger’s date to one with a Session opens that Session', asyn
   expect(await screen.findByRole('region', { name: /^Up next/ })).toBeInTheDocument();
 });
 
-it('a Day with no Lines says so and links to its Routine', async () => {
-  fakeTodayApi([{ ...ppl(), lines: {} }]);
+it('a Day with no Lines says so, and + Line adds one before the first Set', async () => {
+  const { fetch } = fakeTodayApi([{ ...ppl(), lines: {} }]);
   const logger = await startPush();
-  expect(logger.getByText('Push has no Lines.')).toBeInTheDocument();
-  expect(logger.getByRole('link', { name: 'Open PPL' })).toHaveAttribute('href', '/routines/1');
+  expect(logger.getByText('Push has no Lines. Add one with + Line.')).toBeInTheDocument();
+
+  await userEvent.click(logger.getByRole('button', { name: '+ Line' }));
+  await userEvent.type(logger.getByLabelText('Exercise'), '  Goblet   Squat ');
+  await userEvent.click(logger.getByRole('button', { name: 'Add' }));
+  expect(logger.getByRole('heading', { name: 'Goblet Squat' })).toBeInTheDocument();
+  expect(writes(fetch)).toEqual([]);
+
+  await fill(logger, '50', '10');
+  await userEvent.click(logger.getByRole('button', { name: 'Save Set 1' }));
+  await logger.findByRole('button', { name: 'Save Set 2' });
+  const body = JSON.parse(writes(fetch)[0]![1]!.body as string) as { lines: unknown[] };
+  expect(body.lines).toEqual([{ name: '  Goblet   Squat ', sets: [{ reps: 10, weight: '50', warmup: false, note: null }] }]);
+});
+
+// Editing a Session (#21)
+
+async function loggedPush(fake: ReturnType<typeof fakeTodayApi>, ...sets: [string, string][]) {
+  const logger = await startPush();
+  for (const [i, [weight, reps]] of sets.entries()) {
+    await fill(logger, weight, reps);
+    await userEvent.click(logger.getByRole('button', { name: `Save Set ${i + 1}` }));
+    await logger.findByRole('button', { name: `Save Set ${i + 2}` });
+  }
+  expect(fake.sessions).toHaveLength(1);
+  return logger;
+}
+
+function chips(logger: ReturnType<typeof within>) {
+  const list = logger.queryByRole('list', { name: 'Today’s Sets' });
+  return list ? within(list).getAllByRole('button').map((b) => b.textContent) : [];
+}
+
+function lastWrite(fetch: ReturnType<typeof fakeTodayApi>['fetch']) {
+  const [url, init] = writes(fetch).at(-1)!;
+  return { url, method: init!.method, body: JSON.parse(init!.body as string) as { version: number; lines: { id?: number; name?: string; sets: unknown[] }[] } };
+}
+
+it('tapping a Set chip opens an edit sheet that edits any field', async () => {
+  const fake = fakeTodayApi([ppl()]);
+  const logger = await loggedPush(fake, ['135', '5']);
+
+  await userEvent.click(logger.getByRole('button', { name: '135 × 5' }));
+  const sheet = within(logger.getByRole('dialog', { name: 'Set 1' }));
+  expect(sheet.getByLabelText('Weight (lb)')).toHaveValue('135');
+  expect(sheet.getByLabelText('Reps')).toHaveValue('5');
+  await userEvent.click(sheet.getByRole('button', { name: 'Weight +5' }));
+  await userEvent.click(sheet.getByRole('button', { name: 'Reps −1' }));
+  await userEvent.click(sheet.getByRole('button', { name: 'Working' }));
+  await userEvent.type(sheet.getByLabelText('Note'), 'paused');
+  await userEvent.click(sheet.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(chips(logger)).toEqual(['140 × 4 Warmup• Note']));
+  expect(logger.queryByRole('dialog')).not.toBeInTheDocument();
+  const { method, body } = lastWrite(fake.fetch);
+  expect(method).toBe('PUT');
+  expect(body.version).toBe(1);
+  expect(body.lines[0]!.sets).toEqual([{ id: expect.any(Number), reps: 4, weight: '140', warmup: true, note: 'paused' }]);
+
+  // The full Note is in the sheet.
+  await userEvent.click(logger.getByRole('button', { name: /^140 × 4/ }));
+  expect(within(logger.getByRole('dialog', { name: 'Set 1' })).getByLabelText('Note')).toHaveValue('paused');
+});
+
+it('an invalid edit is refused and the sheet stays open', async () => {
+  const fake = fakeTodayApi([ppl()]);
+  const logger = await loggedPush(fake, ['135', '5']);
+  await userEvent.click(logger.getByRole('button', { name: '135 × 5' }));
+  const sheet = within(logger.getByRole('dialog', { name: 'Set 1' }));
+  await userEvent.clear(sheet.getByLabelText('Reps'));
+  await userEvent.type(sheet.getByLabelText('Reps'), '0');
+  await userEvent.click(sheet.getByRole('button', { name: 'Save' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Reps must be a whole number above 0.');
+  expect(logger.getByRole('dialog', { name: 'Set 1' })).toBeInTheDocument();
+  expect(chips(logger)).toEqual(['135 × 5']);
+});
+
+it('Sets move earlier and later within their Line', async () => {
+  const fake = fakeTodayApi([ppl()]);
+  const logger = await loggedPush(fake, ['100', '5'], ['110', '5'], ['120', '5']);
+
+  await userEvent.click(logger.getByRole('button', { name: '120 × 5' }));
+  let sheet = within(logger.getByRole('dialog', { name: 'Set 3' }));
+  expect(sheet.getByRole('button', { name: 'Later' })).toBeDisabled();
+  await userEvent.click(sheet.getByRole('button', { name: 'Earlier' }));
+  await screen.findByRole('dialog', { name: 'Set 2' });
+  expect(chips(logger)).toEqual(['100 × 5', '120 × 5', '110 × 5']);
+
+  sheet = within(logger.getByRole('dialog', { name: 'Set 2' }));
+  await userEvent.click(sheet.getByRole('button', { name: 'Earlier' }));
+  await screen.findByRole('dialog', { name: 'Set 1' });
+  expect(chips(logger)).toEqual(['120 × 5', '100 × 5', '110 × 5']);
+  expect(within(logger.getByRole('dialog', { name: 'Set 1' })).getByRole('button', { name: 'Earlier' })).toBeDisabled();
+});
+
+it('Delete in the sheet removes the Set; deleting the last Set erases the Session', async () => {
+  const fake = fakeTodayApi([ppl()]);
+  const logger = await loggedPush(fake, ['100', '5'], ['110', '5']);
+
+  await userEvent.click(logger.getByRole('button', { name: '100 × 5' }));
+  await userEvent.click(within(logger.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
+  await logger.findByRole('button', { name: 'Save Set 2' });
+  expect(chips(logger)).toEqual(['110 × 5']);
+
+  await userEvent.click(logger.getByRole('button', { name: '110 × 5' }));
+  await userEvent.click(within(logger.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
+  expect(await screen.findByRole('status')).toHaveTextContent('The Session is gone: it had no Sets left.');
+  expect(await screen.findByRole('region', { name: /^Up next/ })).toBeInTheDocument();
+  expect(fake.sessions).toEqual([]);
+});
+
+it('+ Line attaches or creates an Exercise as a new Line at the end, and opens it', async () => {
+  const fake = fakeTodayApi([ppl()]);
+  const logger = await loggedPush(fake, ['135', '5']);
+
+  await userEvent.click(logger.getByRole('button', { name: '+ Line' }));
+  // The picker offers live Exercises.
+  await waitFor(() =>
+    expect([...document.querySelectorAll('#add-line-picks option')].map((o) => o.getAttribute('value'))).toEqual([
+      'Bench Press',
+      'Dips',
+    ]),
+  );
+  await userEvent.type(logger.getByLabelText('Exercise'), 'bench press');
+  await userEvent.click(logger.getByRole('button', { name: 'Add' }));
+
+  const strip = within(logger.getByRole('navigation', { name: 'Lines' }));
+  await waitFor(() =>
+    expect(strip.getAllByRole('button').map((b) => b.textContent)).toEqual(['Bench Press 1', 'Dips 0', 'Bench Press 0', '+ Line']),
+  );
+  expect(strip.getAllByRole('button')[2]).toHaveAttribute('aria-current', 'true');
+  expect(logger.queryByLabelText('Exercise')).not.toBeInTheDocument();
+  const { body } = lastWrite(fake.fetch);
+  expect(body.lines.at(-1)).toEqual({ name: 'bench press', sets: [] });
+});
+
+it('+ Line refuses a Retired Exercise and keeps the name typed', async () => {
+  const fake = fakeTodayApi([ppl()], [], ['Old Press']);
+  const logger = await loggedPush(fake, ['135', '5']);
+  await userEvent.click(logger.getByRole('button', { name: '+ Line' }));
+  await userEvent.type(logger.getByLabelText('Exercise'), 'Old Press');
+  await userEvent.click(logger.getByRole('button', { name: 'Add' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('“Old Press” is a Retired Exercise.');
+  expect(logger.getByLabelText('Exercise')).toHaveValue('Old Press');
+  expect(fake.sessions[0]!.lines).toHaveLength(2);
+});
+
+it('Remove Line is offered only while the Line has no Sets', async () => {
+  const fake = fakeTodayApi([ppl()]);
+  const logger = await loggedPush(fake, ['135', '5']);
+  expect(logger.queryByRole('button', { name: 'Remove Line' })).not.toBeInTheDocument();
+
+  await userEvent.click(logger.getByRole('button', { name: 'Next Line' }));
+  await userEvent.click(logger.getByRole('button', { name: 'Remove Line' }));
+
+  const strip = within(logger.getByRole('navigation', { name: 'Lines' }));
+  await waitFor(() => expect(strip.getAllByRole('button').map((b) => b.textContent)).toEqual(['Bench Press 1', '+ Line']));
+  expect(lastWrite(fake.fetch).body.lines).toHaveLength(1);
+});
+
+it('before the first Set, removed Lines are left out of the new Session', async () => {
+  const { fetch } = fakeTodayApi([ppl()]);
+  const logger = await startPush();
+  await userEvent.click(logger.getByRole('button', { name: 'Remove Line' }));
+  expect(logger.getByRole('heading', { name: 'Dips' })).toBeInTheDocument();
+
+  await fill(logger, '0', '10');
+  await userEvent.click(logger.getByRole('button', { name: 'Save Set 1' }));
+  await logger.findByRole('button', { name: 'Save Set 2' });
+  const body = JSON.parse(writes(fetch)[0]![1]!.body as string) as { day_lines: number[]; lines: unknown[] };
+  expect(body.day_lines).toEqual([1000, 1001]);
+  expect(body.lines).toEqual([{ day_line_id: 1001, sets: [{ reps: 10, weight: '0', warmup: false, note: null }] }]);
+});
+
+it('Delete Session asks first, then erases it and goes back to Up next', async () => {
+  const fake = fakeTodayApi([ppl()]);
+  const logger = await loggedPush(fake, ['135', '5']);
+
+  await userEvent.click(logger.getByRole('button', { name: 'Delete Session…' }));
+  await userEvent.click(logger.getByRole('button', { name: 'Keep it' }));
+  expect(fake.sessions).toHaveLength(1);
+
+  await userEvent.click(logger.getByRole('button', { name: 'Delete Session…' }));
+  await userEvent.click(within(logger.getByRole('group', { name: 'Delete Session' })).getByRole('button', { name: 'Delete Session' }));
+  expect(await screen.findByRole('status')).toHaveTextContent('Session deleted.');
+  expect(await screen.findByRole('region', { name: /^Up next/ })).toBeInTheDocument();
+  expect(fake.sessions).toEqual([]);
+  expect(fake.fetch).toHaveBeenCalledWith(expect.stringMatching(/\/wolog\/api\/sessions\/\d+$/), expect.objectContaining({ method: 'DELETE' }));
+});
+
+it('a write refused because the Session changed elsewhere reloads it', async () => {
+  const fake = fakeTodayApi([ppl()]);
+  const logger = await loggedPush(fake, ['135', '5']);
+  const session = fake.sessions[0]!;
+  session.lines[0]!.sets.push({ id: 77, reps: 3, weight: '150', warmup: false, note: null });
+  session.version += 1; // saved on another device
+
+  await fill(logger, '140', '5');
+  await userEvent.click(logger.getByRole('button', { name: 'Save Set 2' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('This Session changed since you loaded it.');
+  await waitFor(() => expect(chips(logger)).toEqual(['135 × 5', '150 × 3']));
 });

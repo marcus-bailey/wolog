@@ -28,14 +28,19 @@ export interface Session {
   routine: { id: number; name: string };
   day: { id: number; name: string };
   turn_id: number | null;
+  /** Bumped by every write; a write from an older one is refused (`session_changed`). */
+  version: number;
   lines: SessionLine[];
 }
 
-/** A Line of a new Session: one of the Day's Lines (the Snapshot), or an extra Exercise. */
-export type NewLine = ({ day_line_id: number } | { exercise_id: number }) & { sets: SetValues[] };
+/**
+ * A Line of a new Session: one of the Day's Lines (the Snapshot), or an extra Exercise by id or by
+ * the name typed (a live Exercise's name attaches it; a new name creates it).
+ */
+export type NewLine = ({ day_line_id: number } | { exercise_id: number } | { name: string }) & { sets: SetValues[] };
 
-/** A Line of a saved Session, by id, or a new one by Exercise. */
-export type LineWrite = ({ id: number } | { exercise_id: number }) & { sets: SetValues[] };
+/** A Line of a saved Session, by id, or a new one (appended) by Exercise id or name. */
+export type LineWrite = ({ id: number } | { exercise_id: number } | { name: string }) & { sets: SetValues[] };
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
@@ -68,6 +73,7 @@ function expectSession(v: unknown): Session {
     isNamed(v.routine) &&
     isNamed(v.day) &&
     (v.turn_id === null || typeof v.turn_id === 'number') &&
+    typeof v.version === 'number' &&
     Array.isArray(v.lines) &&
     v.lines.every(isLine)
   ) {
@@ -77,6 +83,7 @@ function expectSession(v: unknown): Session {
       routine: { id: v.routine.id, name: v.routine.name },
       day: { id: v.day.id, name: v.day.name },
       turn_id: v.turn_id,
+      version: v.version,
       lines: v.lines,
     };
   }
@@ -114,8 +121,18 @@ export async function createSession(body: {
   );
 }
 
-/** Make the Session's Lines and Sets these. Null means no Set was left, so the Session is gone. */
-export async function writeSession(id: number, lines: LineWrite[]): Promise<Session | null> {
-  const body = await request('PUT', `sessions/${id}`, { lines });
+/**
+ * Make the Session's Lines and Sets these, from the version the screen shows. Null means no Set was
+ * left, so the Session is gone. Refused if it changed meanwhile (`session_changed`), a Set moved
+ * Lines (`set_moved`), a removed Line has Sets (`line_has_sets`), or a new Line names a Retired
+ * Exercise (`name_retired`).
+ */
+export async function writeSession(session: Session, lines: LineWrite[]): Promise<Session | null> {
+  const body = await request('PUT', `sessions/${session.id}`, { version: session.version, lines });
   return body === null ? null : expectSession(body);
+}
+
+/** Delete the Session with its Lines and Sets. Skips it replaced are not restored. */
+export async function deleteSession(id: number): Promise<void> {
+  await request('DELETE', `sessions/${id}`);
 }

@@ -74,6 +74,8 @@ class SessionRecord(Base):
     routine_id: Mapped[int] = mapped_column(ForeignKey("routine.id", ondelete="RESTRICT"))
     day_id: Mapped[int]
     turn_id: Mapped[int | None]
+    version: Mapped[int] = mapped_column(server_default="1")
+    """Bumped by every write; a write naming an older one is refused (see `wolog.sessions`)."""
 
 
 def _pins(routine_id: int) -> Select[int | None, dt.date, int]:
