@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import { messageOf, Refused } from '../api';
 import { localToday, shownDate } from '../dates';
-import { getDay } from '../routines/api';
+import { getDay, getRoutine } from '../routines/api';
 import { useRoutines } from '../routines/RoutinesContext';
 import {
   createSession,
@@ -19,14 +19,23 @@ import { Logger, type LoggerActions, type Logging } from './Logger';
 /** Refusals that mean the screen is out of date: reload Up next (and the Routines). */
 const STALE = ['routine_switched', 'suggestion_changed', 'not_last_skip', 'not_found', 'rotation_empty', 'no_routine'];
 /** Refusals of a first save that mean the logger reloads on the current suggestion (spec §4.5, LOG-8). */
-const STALE_START = ['routine_switched', 'suggestion_changed', 'rotation_empty', 'no_routine', 'day_changed'];
+const STALE_START = ['routine_switched', 'suggestion_changed', 'rotation_empty', 'no_routine', 'day_changed', 'day_off_rotation'];
 /** Refusals of a Session write that mean the screen missed a change: reload the Session. */
 const STALE_SESSION = ['session_exists', 'session_changed', 'not_found', 'line_has_sets', 'set_moved', 'lines_reordered'];
 
-/** Open the logger on Up next's suggested Day for `on`; saves nothing. Null when there's none. */
-async function draftOn(next: UpNext, on: string): Promise<Logging | null> {
+/** A Day of the rotation, as Pick another Day lists it. */
+interface PickedDay {
+  id: number;
+  name: string;
+}
+
+/**
+ * Open the logger for `on` on Up next's suggested Day, or on the Day picked instead; saves nothing.
+ * Null when there's no suggestion.
+ */
+async function draftOn(next: UpNext, on: string, picked: PickedDay | null = null): Promise<Logging | null> {
   if (!next.routine || !next.suggestion) return null;
-  const day = await getDay(next.suggestion.day_id);
+  const day = await getDay(picked?.id ?? next.suggestion.day_id);
   const lines = day.lines.map((l) => ({ key: `d${l.id}`, dayLineId: l.id, exercise: l.exercise }));
   return { kind: 'draft', routine: next.routine, suggestion: next.suggestion, day, date: on, lines };
 }
@@ -57,6 +66,9 @@ export function Today() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Pick another Day: the rotation's Days while choosing, and the Day picked over the suggestion. */
+  const [rotationDays, setRotationDays] = useState<PickedDay[] | null>(null);
+  const [picked, setPicked] = useState<PickedDay | null>(null);
   const [busy, setBusy] = useState(false);
   // Filled when the screen opens; it does not roll at midnight.
   const [today] = useState(localToday);
@@ -81,6 +93,8 @@ export function Today() {
             : null;
         if (!current) return;
         setUpNext(next);
+        setPicked(null);
+        setRotationDays(null);
         setLogging(reopened);
         setLoadError(null);
       })
@@ -93,6 +107,8 @@ export function Today() {
   async function act(action: () => Promise<UpNext>) {
     setBusy(true);
     setError(null);
+    setPicked(null);
+    setRotationDays(null);
     try {
       setUpNext(await action());
     } catch (e) {
@@ -112,7 +128,7 @@ export function Today() {
     setError(null);
     try {
       const session = await getSessionOn(today);
-      setLogging(session ? { kind: 'session', session } : await draftOn(upNext, today));
+      setLogging(session ? { kind: 'session', session } : await draftOn(upNext, today, picked));
     } catch (e) {
       setError(messageOf(e));
     } finally {
@@ -161,17 +177,18 @@ export function Today() {
   }
 
   /** Write the Session's post-state after `change`. No Set left means the Session is gone. */
-  function write(change: (lines: ReturnType<typeof postState>) => LineWrite[]): Promise<boolean> {
+  function write(change: (lines: ReturnType<typeof postState>) => LineWrite[], dayId?: number): Promise<boolean> {
     if (logging?.kind !== 'session') return Promise.resolve(false);
     const session = logging.session;
     return attempt(async () => {
-      const after = await writeSession(session, change(postState(session)));
+      const after = await writeSession(session, change(postState(session)), dayId);
       if (after) {
         setLogging({ kind: 'session', session: after });
+        if (dayId !== undefined) showUpNext(await getUpNext()); // the re-pinned Turn may move the cursor
       } else {
         setLogging(null);
         setNotice('The Session is gone: it had no Sets left.');
-        setUpNext(await getUpNext());
+        showUpNext(await getUpNext());
       }
     });
   }
@@ -194,6 +211,7 @@ export function Today() {
           date: draft.date,
           routineId: draft.routine.id,
           turnId: draft.suggestion.turn_id,
+          ...(draft.day.id === draft.suggestion.day_id ? {} : { dayId: draft.day.id }),
           dayLines: draft.day.lines.map((l) => l.id),
           lines: draft.lines.map((l, i) => ({
             ...('dayLineId' in l ? { day_line_id: l.dayLineId } : { name: l.name }),
@@ -201,7 +219,7 @@ export function Today() {
           })),
         });
         setLogging({ kind: 'session', session });
-        setUpNext(await getUpNext());
+        showUpNext(await getUpNext());
       });
     },
     editSet(lineIndex, setIndex, set) {
@@ -246,8 +264,11 @@ export function Today() {
         await deleteSession(id);
         setLogging(null);
         setNotice('Session deleted.');
-        setUpNext(await getUpNext());
+        showUpNext(await getUpNext());
       });
+    },
+    changeDay(dayId) {
+      return write((lines) => lines, dayId);
     },
     changeDate: (on) => void onDate(on),
     close: () => void onClose(),
@@ -261,13 +282,33 @@ export function Today() {
       if (STALE_SESSION.includes(code)) {
         const session = await getSessionOn(on);
         setLogging(session ? { kind: 'session', session } : null);
-        if (!session) setUpNext(await getUpNext());
+        if (!session) showUpNext(await getUpNext());
       } else if (logging.kind === 'draft' && STALE_START.includes(code)) {
         await reloadRoutines();
         const next = await getUpNext();
-        setUpNext(next);
+        showUpNext(next);
         setLogging(await draftOn(next, on));
       }
+    } catch (e) {
+      setError(messageOf(e));
+    }
+  }
+
+  /** Show a fresh Up next. A pick is made against one suggestion, so it goes with it. */
+  function showUpNext(next: UpNext) {
+    setUpNext(next);
+    setPicked(null);
+    setRotationDays(null);
+  }
+
+  /** Pick another Day: list the Days on the rotation, each once, in the order of their first Turn. */
+  async function onPickAnother() {
+    if (!upNext?.routine) return;
+    setError(null);
+    try {
+      const detail = await getRoutine(upNext.routine.id);
+      const ids = [...new Set(detail.rotation.map((t) => t.day_id))];
+      setRotationDays(ids.map((id) => ({ id, name: detail.days.find((d) => d.id === id)?.name ?? '' })));
     } catch (e) {
       setError(messageOf(e));
     }
@@ -329,15 +370,51 @@ export function Today() {
           </h2>
           {suggestion ? (
             <>
-              <p className="quiet">
-                Turn {suggestion.position} of {suggestion.of}
-              </p>
-              <p className="suggested-day">{suggestion.day_name}</p>
+              {picked ? (
+                <p className="quiet">Suggested: {suggestion.day_name}</p>
+              ) : (
+                <p className="quiet">
+                  Turn {suggestion.position} of {suggestion.of}
+                </p>
+              )}
+              <p className="suggested-day">{(picked ?? { name: suggestion.day_name }).name}</p>
               <div className="row actions">
                 <button type="button" disabled={busy} onClick={() => void onStart()}>
-                  Start {suggestion.day_name}
+                  Start {(picked ?? { name: suggestion.day_name }).name}
                 </button>
+                {picked ? (
+                  <button type="button" className="secondary" onClick={() => setPicked(null)}>
+                    Back to {suggestion.day_name}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="secondary"
+                    aria-expanded={rotationDays !== null}
+                    onClick={() => (rotationDays ? setRotationDays(null) : void onPickAnother())}
+                  >
+                    Pick another Day
+                  </button>
+                )}
               </div>
+              {rotationDays && !picked && (
+                <div className="chips pick-day" role="group" aria-label="Days on the rotation">
+                  {rotationDays.map((d) => (
+                    <button
+                      key={d.id}
+                      type="button"
+                      className="chip"
+                      onClick={() => {
+                        setPicked(d.id === suggestion.day_id ? null : d);
+                        setRotationDays(null);
+                      }}
+                    >
+                      {d.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {!picked && (
               <form className="skip" onSubmit={onSkip}>
                 <label htmlFor="skip-date">Skip date</label>
                 <div className="row">
@@ -354,6 +431,7 @@ export function Today() {
                   </button>
                 </div>
               </form>
+              )}
             </>
           ) : (
             <>

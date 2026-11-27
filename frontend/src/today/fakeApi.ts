@@ -13,6 +13,8 @@ export interface FakeRoutine {
   skips: { id: number; date: string; turn: number }[];
   /** Each Day's Lines, as Exercise names, by Day name. */
   lines?: Record<string, string[]>;
+  /** Days of the Routine with no Turn; their ids are 100 × Routine id + 50 + index. */
+  offRotation?: string[];
 }
 
 interface FakeSet {
@@ -28,7 +30,7 @@ interface FakeSession {
   date: string;
   routine: { id: number; name: string };
   day: { id: number; name: string };
-  turn_id: number;
+  turn_id: number | null;
   version: number;
   lines: { id: number; exercise: { id: number; name: string; retired: boolean }; sets: FakeSet[] }[];
 }
@@ -51,13 +53,27 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
   const retiredRefusal = (name: string) =>
     json(409, { code: 'name_retired', message: `“${name}” is a Retired Exercise. Un-retire it to use it again.` });
   const turnId = (r: FakeRoutine, i: number) => r.id * 100 + i;
-  const dayLines = (r: FakeRoutine, i: number) =>
-    (r.lines?.[r.turns[i]!] ?? []).map((name, j) => ({ id: turnId(r, i) * 10 + j, exercise: exercise(name) }));
+  /** Every Day of the Routine: one per Turn (same id as its Turn), then those off the rotation. */
+  const days = (r: FakeRoutine) => [
+    ...r.turns.map((name, i) => ({ id: turnId(r, i), name })),
+    ...(r.offRotation ?? []).map((name, i) => ({ id: r.id * 100 + 50 + i, name })),
+  ];
+  const dayById = (id: number) => {
+    const r = routines.find((x) => x.id === Math.floor(id / 100))!;
+    return { routine: r, day: days(r).find((d) => d.id === id)! };
+  };
+  const linesOf = (dayId: number) => {
+    const { routine, day } = dayById(dayId);
+    return (routine.lines?.[day.name] ?? []).map((name, j) => ({ id: dayId * 10 + j, exercise: exercise(name) }));
+  };
+  const dayLines = (r: FakeRoutine, i: number) => linesOf(turnId(r, i));
 
   function cursor(r: FakeRoutine): number | undefined {
     const pins = [
       ...r.skips.map((s) => ({ date: s.date, seq: s.id, turn: s.turn })),
-      ...sessions.filter((s) => s.routine.id === r.id).map((s) => ({ date: s.date, seq: s.id, turn: s.turn_id % 100 })),
+      ...sessions
+        .filter((s) => s.routine.id === r.id && s.turn_id !== null)
+        .map((s) => ({ date: s.date, seq: s.id, turn: s.turn_id! % 100 })),
     ].sort((a, b) => a.date.localeCompare(b.date) || a.seq - b.seq);
     return pins.at(-1)?.turn;
   }
@@ -102,8 +118,19 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
     const day = /^days\/(\d+)$/.exec(path);
     if (day) {
       const id = Number(day[1]);
-      const r = routines.find((x) => x.id === Math.floor(id / 100))!;
-      return json(200, { id, name: r.turns[id % 100], lines: dayLines(r, id % 100) });
+      return json(200, { id, name: dayById(id).day.name, lines: linesOf(id) });
+    }
+    const detail = /^routines\/(\d+)$/.exec(path);
+    if (detail) {
+      const r = routines.find((x) => x.id === Number(detail[1]))!;
+      return json(200, {
+        id: r.id,
+        name: r.name,
+        engaged: r.engaged,
+        days: days(r).map((d) => ({ ...d, lines: linesOf(d.id) })),
+        rotation: r.turns.map((_, i) => ({ id: turnId(r, i), day_id: turnId(r, i) })),
+        next_turn_id: null,
+      });
     }
     if (path.startsWith('exercises')) {
       return json(200, [...exerciseIds.keys()].map(exercise).filter((e) => !e.retired));
@@ -122,7 +149,11 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
       if (body.turn_id !== now.suggestion?.turn_id) {
         return json(409, { code: 'suggestion_changed', message: `Up next is now ${now.suggestion?.day_name}. Check it and try again.` });
       }
-      const index = (body.turn_id as number) % 100;
+      const picked = (body.day_id as number | undefined) ?? (body.turn_id as number);
+      if (Math.floor(picked / 100) !== r.id || picked % 100 >= r.turns.length) {
+        return json(409, { code: 'day_off_rotation', message: `That Day is not on the rotation of “${r.name}”. Pick a Day on it.` });
+      }
+      const index = picked % 100;
       const lines = dayLines(r, index);
       const given = body.lines as { day_line_id?: number; name?: string; sets: Omit<FakeSet, 'id'>[] }[];
       const bad = given.find((l) => l.name !== undefined && exercise(l.name).retired);
@@ -132,7 +163,7 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
         date: body.date as string,
         routine: { id: r.id, name: r.name },
         day: { id: turnId(r, index), name: r.turns[index]! },
-        turn_id: body.turn_id as number,
+        turn_id: turnId(r, index),
         version: 1,
         lines: given.map((l) => ({
           id: nextId++,
@@ -161,6 +192,11 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
       if (!given.some((l) => l.sets.length > 0)) {
         sessions.splice(sessions.indexOf(session), 1);
         return json(200, null);
+      }
+      if (body.day_id !== undefined) {
+        const { day } = dayById(body.day_id as number);
+        session.day = day;
+        session.turn_id = day.id % 100 < 50 ? day.id : null;
       }
       session.lines = given.map((l) =>
         l.id !== undefined

@@ -874,6 +874,180 @@ def test_dissolving_a_session_does_not_restore_its_skips(client: TestClient, eng
     assert count(engine, "skip") == 0
 
 
+# Pick another Day (TDY-2, §4.4 Override)
+
+
+def pick(client: TestClient, day_id: int, date: str | None = None, **override: Any) -> httpx2.Response:
+    """Save the first Set on a picked Day: its Lines, one Set on the first, over the suggestion seen."""
+    seen = [line["id"] for line in day_lines(client, day_id)]
+    lines = [{"day_line_id": dl, "sets": [a_set()] if i == 0 else []} for i, dl in enumerate(seen)]
+    return start(client, date, lines=lines, day_lines=seen, day_id=day_id, **override)
+
+
+def picked(client: TestClient, day_id: int, date: str | None = None) -> dict[str, Any]:
+    body: dict[str, Any] = ok(pick(client, day_id, date), 201)
+    return body
+
+
+def test_picking_a_day_pins_its_first_turn_at_or_after_the_suggestion(client: TestClient) -> None:
+    ppl = Routine(client, A=["Bench Press"], B=["Rows"], C=["Squat"])
+    turns = ppl.turns()
+    ok(client.post(f"/api/routines/{ppl.id}/turns", json={"day_id": ppl.day["A"]}))  # A B C A
+    assert suggested(client) == "A"
+    session = picked(client, ppl.day["C"])
+    assert session["day"]["name"] == "C"
+    assert session["turn_id"] == turns[2]
+    assert suggested(client) == "A" and up_next(client)["suggestion"]["position"] == 4
+
+
+def test_picking_the_day_just_logged_wraps_around_to_its_turn(client: TestClient) -> None:
+    ppl = Routine(client, A=["Bench Press"], B=["Rows"], C=["Squat"])
+    started(client, days_ago(1))  # A
+    assert suggested(client) == "B"
+    session = picked(client, ppl.day["A"])
+    assert session["turn_id"] == ppl.turns()[0]
+    assert suggested(client) == "B"  # the next suggestion advances from what was logged
+
+
+def test_picking_a_day_off_the_rotation_or_of_another_routine_is_refused(client: TestClient, engine: Engine) -> None:
+    ppl = Routine(client, A=["Bench Press"], B=["Rows"])
+    other = Routine(client, "Upper Lower", Upper=["Rows"])
+    ok(client.post(f"/api/days/{ppl.day['B']}/drop"))
+    assert "not on the rotation" in refused(pick(client, ppl.day["B"]), 409, "day_off_rotation")
+    refused(pick(client, other.day["Upper"]), 409, "day_off_rotation")
+    assert count(engine, "session") == 0
+
+
+# Change-Day (LOG-5, §4.5)
+
+
+def change_day(
+    client: TestClient, session: dict[str, Any], day_id: int, lines: list[dict[str, Any]] | None = None
+) -> httpx2.Response:
+    body = {"version": session["version"], "day_id": day_id, "lines": post_state(session) if lines is None else lines}
+    return client.put(f"/api/sessions/{session['id']}", json=body)
+
+
+def test_change_day_relabels_and_repins_to_the_new_days_turn_at_or_after_the_old(client: TestClient) -> None:
+    ppl = Routine(client, A=["Bench Press"], B=["Rows"], C=["Squat"])
+    session = started(client)  # A, Turn 1
+    after = ok(change_day(client, session, ppl.day["C"]))
+    assert after["day"] == {"id": ppl.day["C"], "name": "C"}
+    assert after["turn_id"] == ppl.turns()[2]
+    assert shape(after) == shape(session)  # no new Snapshot; Lines and Sets untouched
+    assert suggested(client) == "A"  # the live cursor moved to C's Turn
+
+
+def test_change_day_takes_the_first_turn_at_or_after_the_old_one_and_wraps(client: TestClient) -> None:
+    ppl = Routine(client, A=["Bench Press"], B=["Rows"], C=["Squat"])
+    ok(client.post(f"/api/routines/{ppl.id}/turns", json={"day_id": ppl.day["A"]}))  # A B C A
+    a1, _b, _c, a4 = ppl.turns()
+    session = picked(client, ppl.day["B"])  # Turn 2
+    after = ok(change_day(client, session, ppl.day["A"]))
+    assert after["turn_id"] == a4  # at or after Turn 2, not the first A
+    after = ok(change_day(client, after, ppl.day["B"]))
+    after = ok(change_day(client, after, ppl.day["C"]))  # Turn 3
+    ok(client.delete(f"/api/routines/{ppl.id}/turns/{a4}"))  # A B C
+    after = ok(change_day(client, on(client) or {}, ppl.day["A"]))
+    assert after["turn_id"] == a1  # wrapped
+
+
+def test_change_day_offers_days_off_the_rotation_which_hold_no_turn(client: TestClient) -> None:
+    ppl = Routine(client, A=["Bench Press"], B=["Rows"])
+    ok(client.post(f"/api/days/{ppl.day['B']}/drop"))
+    session = started(client)
+    after = ok(change_day(client, session, ppl.day["B"]))
+    assert after["day"]["name"] == "B"
+    assert after["turn_id"] is None
+    assert suggested(client) == "A"  # walks back past the Session holding no Turn: the first Turn
+
+
+def test_change_day_to_a_day_of_another_routine_is_refused(client: TestClient) -> None:
+    Routine(client, A=["Bench Press"])
+    other = Routine(client, "Upper Lower", Upper=["Rows"])
+    session = started(client)
+    refused(change_day(client, session, other.day["Upper"]), 404, "not_found")
+    refused(change_day(client, session, 2**31), 404, "not_found")
+    assert on(client) == session
+
+
+def test_change_day_may_share_a_write_with_line_and_set_edits(client: TestClient) -> None:
+    ppl = Routine(client, A=["Bench Press", "Dips"], B=["Rows"])
+    session = started(client)
+    lines = post_state(session)
+    lines[0]["sets"].append(a_set(3, "150"))
+    after = ok(change_day(client, session, ppl.day["B"], [lines[0], {"name": "Curls"}]))
+    assert after["day"]["name"] == "B"
+    assert shape(after) == [("Bench Press", ["135×5", "150×3"]), ("Curls", [])]
+    assert [line["exercise"]["name"] for line in day_lines(client, ppl.day["B"])] == ["Rows"]
+
+
+def test_a_refused_write_does_not_change_the_day(client: TestClient) -> None:
+    ppl = Routine(client, A=["Bench Press"], B=["Rows"])
+    session = started(client)
+    lines = post_state(session)
+    lines[0]["sets"][0]["reps"] = 0
+    refused(change_day(client, session, ppl.day["B"], lines), 422, "reps_invalid")
+    assert on(client) == session
+
+
+def test_change_day_never_rewrites_skips(client: TestClient, engine: Engine) -> None:
+    ppl = Routine(client, A=["Bench Press"], B=["Rows"], C=["Squat"])
+    session = started(client, days_ago(2))  # A
+    ok(client.post("/api/skips", json={**_skip_body(client), "date": days_ago(1)}), 201)  # B
+    with engine.connect() as conn:
+        before = conn.execute(text("select id, date, day_id, turn_id from skip")).all()
+    ok(change_day(client, session, ppl.day["C"]))
+    with engine.connect() as conn:
+        assert conn.execute(text("select id, date, day_id, turn_id from skip")).all() == before
+    assert suggested(client) == "C"  # the later Skip of B still decides
+
+
+def test_changing_a_backfilled_sessions_day_does_not_move_the_live_cursor(client: TestClient) -> None:
+    ppl = Routine(client, A=["Bench Press"], B=["Rows"], C=["Squat"])
+    early = started(client, days_ago(3))  # A
+    started(client, days_ago(1))  # B, the latest
+    assert suggested(client) == "C"
+    ok(change_day(client, early, ppl.day["C"]))
+    assert suggested(client) == "C"
+
+
+def test_changing_the_latest_sessions_day_moves_the_live_cursor(client: TestClient) -> None:
+    ppl = Routine(client, A=["Bench Press"], B=["Rows"], C=["Squat"])
+    session = started(client)  # A
+    assert suggested(client) == "B"
+    ok(change_day(client, session, ppl.day["B"]))
+    assert suggested(client) == "C"
+
+
+def test_change_day_from_a_session_holding_no_turn_starts_at_the_first_turn(client: TestClient) -> None:
+    ppl = Routine(client, A=["Bench Press"], B=["Rows"], C=["Squat"])
+    ok(client.post(f"/api/routines/{ppl.id}/turns", json={"day_id": ppl.day["B"]}))  # A B C B
+    session = picked(client, ppl.day["C"])
+    ok(client.delete(f"/api/routines/{ppl.id}/turns/{ppl.turns()[2]}"))  # A B B
+    current = on(client)
+    assert current is not None and current["turn_id"] is None
+    assert ok(change_day(client, current, ppl.day["B"]))["turn_id"] == ppl.turns()[1]
+    assert session["id"] == current["id"]
+
+
+def test_change_day_works_after_switching_routines(client: TestClient) -> None:
+    ppl = Routine(client, A=["Bench Press"], B=["Rows"])
+    session = started(client)
+    Routine(client, "Upper Lower", Upper=["Rows"]).engage()
+    assert ok(change_day(client, session, ppl.day["B"]))["routine"]["name"] == "PPL"
+
+
+def test_an_emptying_write_with_a_day_of_another_routine_is_refused(client: TestClient) -> None:
+    Routine(client, A=["Bench Press"])
+    other = Routine(client, "Upper Lower", Upper=["Rows"])
+    session = started(client)
+    lines = post_state(session)
+    lines[0]["sets"] = []
+    refused(change_day(client, session, other.day["Upper"], lines), 404, "not_found")
+    assert on(client) == session
+
+
 # Refusal shapes
 
 

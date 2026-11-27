@@ -541,3 +541,6 @@ button.chip.set[aria-expanded='true'] {
   padding-top: 1rem;
   border-top: 1px solid var(--line);
 }
+.pick-day {
+  flex-wrap: wrap;
+}

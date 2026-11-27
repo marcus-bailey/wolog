@@ -98,3 +98,13 @@ def cursor(db: Session, routine_id: int) -> int | None:
 def next_index(turn_ids: list[int], at: int | None) -> int:
     """Where the suggestion is in the rotation: after the cursor Turn, wrapping; else the first."""
     return (turn_ids.index(at) + 1) % len(turn_ids) if at in turn_ids else 0
+
+
+def first_turn_of(rotation: list[tuple[int, int]], day_id: int, start: int) -> int | None:
+    """The id of the Day's first Turn at or after index `start` of the rotation (Turn id, Day id
+    pairs in order), wrapping around; None when the Day has no Turn."""
+    for k in range(len(rotation)):
+        turn_id, turn_day = rotation[(start + k) % len(rotation)]
+        if turn_day == day_id:
+            return turn_id
+    return None

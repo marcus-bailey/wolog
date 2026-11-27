@@ -31,10 +31,10 @@ from sqlalchemy import CheckConstraint, ForeignKey, Identity, Index, Numeric, Un
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from wolog import exercises
-from wolog.days import Day, DayLine
+from wolog.days import Day, DayLine, Turn, get_routine
 from wolog.db import MAX_ID, Base, get_session
 from wolog.exercises import Exercise, ExerciseOut
-from wolog.pins import SessionRecord, Skip
+from wolog.pins import SessionRecord, Skip, first_turn_of
 from wolog.refusals import Refusal, documented
 from wolog.routines import Routine
 from wolog.today import check_today, engaged_as_seen, shown, suggestion
@@ -106,13 +106,15 @@ class NewLineIn(BaseModel):
 
 class SessionCreate(BaseModel):
     """The first save. `routine_id` and `turn_id` are the Engaged Routine and suggestion the logger
-    opened on; `day_lines` are the Day's Line ids it showed, the basis of the Snapshot; `lines` are the
+    opened on; `day_id` is the Day picked instead of the suggested one (Pick another Day), if any;
+    `day_lines` are that Day's Line ids the logger showed, the basis of the Snapshot; `lines` are the
     Lines the screen has, in order, with their Sets. `date` is the logger's date, `today` the browser's."""
 
     date: dt.date
     today: dt.date
     routine_id: int
     turn_id: int
+    day_id: int | None = None
     day_lines: list[int]
     lines: list[NewLineIn]
 
@@ -129,9 +131,11 @@ class LineIn(BaseModel):
 
 class SessionWrite(BaseModel):
     """The resulting Lines of the Session, in order, each with its Sets in order. `version` is the
-    Session's version the screen was showing."""
+    Session's version the screen was showing. `day_id`, when given, changes the Session's Day
+    (Change-Day): a relabel to any Day of its Routine, on or off the rotation."""
 
     version: int
+    day_id: int | None = None
     lines: list[LineIn]
 
 
@@ -278,6 +282,23 @@ def _changed() -> Refusal:
     )
 
 
+def _change_day(db: Session, record: SessionRecord, day_id: int) -> None:
+    """Relabel the Session to another Day of its Routine (spec §4.5 Change-Day): no new Snapshot.
+    It re-pins to the new Day's first Turn at or after the old Turn's position, wrapping; with no
+    Turn for the new Day it holds none. Skips are never rewritten."""
+    routine = get_routine(db, record.routine_id, lock=True)  # the rotation holds still meanwhile
+    day = db.get(Day, day_id) if 1 <= day_id <= MAX_ID else None
+    if day is None or day.routine_id != routine.id:
+        raise Refusal(status.HTTP_404_NOT_FOUND, "not_found", f"That Day is not in “{routine.name}”.")
+    rotation = [
+        (t.id, t.day_id) for t in db.scalars(select(Turn).where(Turn.routine_id == routine.id).order_by(Turn.position))
+    ]
+    ids = [turn_id for turn_id, _ in rotation]
+    start = ids.index(record.turn_id) if record.turn_id in ids else 0
+    record.day_id = day.id
+    record.turn_id = first_turn_of(rotation, day.id, start)
+
+
 @router.get("/api/sessions/on/{date}", responses=documented(422))
 def session_on(date: dt.date, db: DbSession) -> SessionOut | None:
     """The Session on this civil date, whatever its Routine, or null when there is none."""
@@ -322,8 +343,25 @@ def create_session(body: SessionCreate, db: DbSession) -> SessionOut:
             f"Up next is now {suggested.day_name}. Check it and try again.",
         )
 
+    turn_id = suggested.turn_id
+    if body.day_id is not None and body.day_id != suggested.day_id:
+        # Pick another Day: its first Turn at or after the suggested one, wrapping (spec §4.4 Override).
+        rotation = [
+            (t.id, t.day_id)
+            for t in db.scalars(select(Turn).where(Turn.routine_id == routine.id).order_by(Turn.position))
+        ]
+        found = first_turn_of(rotation, body.day_id, suggested.position - 1)
+        if found is None:
+            raise Refusal(
+                status.HTTP_409_CONFLICT,
+                "day_off_rotation",
+                f"That Day is not on the rotation of “{routine.name}”. Pick a Day on it.",
+            )
+        turn_id = found
+    day_id = body.day_id if body.day_id is not None else suggested.day_id
+
     # The Snapshot: the Day's Lines as they are now, which must be the ones the logger showed.
-    day = db.scalar(select(Day).where(Day.id == suggested.day_id).with_for_update(read=True))
+    day = db.scalar(select(Day).where(Day.id == day_id).with_for_update(read=True))
     assert day is not None
     day_lines = {
         dl.id: dl for dl in db.scalars(select(DayLine).where(DayLine.day_id == day.id).order_by(DayLine.position))
@@ -353,7 +391,7 @@ def create_session(body: SessionCreate, db: DbSession) -> SessionOut:
     extra = _line_exercises(db, (line.exercise_id for line in body.lines), (line.name for line in body.lines))
 
     db.execute(delete(Skip).where(Skip.routine_id == routine.id, Skip.date == body.date))
-    record = SessionRecord(date=body.date, routine_id=routine.id, day_id=day.id, turn_id=suggested.turn_id)
+    record = SessionRecord(date=body.date, routine_id=routine.id, day_id=day.id, turn_id=turn_id)
     db.add(record)
     db.flush()
     for position, line in enumerate(body.lines):
@@ -376,6 +414,12 @@ def write_session(session_id: int, body: SessionWrite, db: DbSession) -> Session
     """Make the Session's Lines and Sets these. Saved Lines and Sets are named by id; Sets stay on
     their Line. A saved Line may be left out (removed) only while it has no Sets. A result with no Set
     erases the Session (null); later logging on that date starts a new one. Never touches the Day."""
+    if body.day_id is not None and 1 <= session_id <= MAX_ID:
+        # Change-Day reads the rotation under the Routine's lock. Take it before the Session's, the
+        # order rotation writes use (removing a Turn locks the Sessions that pin it), so they can't deadlock.
+        routine_id = db.scalar(select(SessionRecord.routine_id).where(SessionRecord.id == session_id))
+        if routine_id is not None:
+            get_routine(db, routine_id, lock=True)
     record = db.get(SessionRecord, session_id, with_for_update=True) if 1 <= session_id <= MAX_ID else None
     if record is None:
         raise Refusal(status.HTTP_404_NOT_FOUND, "not_found", "That Session no longer exists.")
@@ -443,6 +487,8 @@ def write_session(session_id: int, body: SessionWrite, db: DbSession) -> Session
                 "line_has_sets",
                 "A Line can be removed only while it has no Sets. Delete its Sets first.",
             )
+    if body.day_id is not None and body.day_id != record.day_id:
+        _change_day(db, record, body.day_id)
     if not any(line.sets for line in body.lines):  # dissolve: no Set left, no Session
         db.delete(record)
         db.flush()
