@@ -144,3 +144,51 @@ export async function writeSession(session: Session, lines: LineWrite[], dayId?:
 export async function deleteSession(id: number): Promise<void> {
   await request('DELETE', `sessions/${id}`);
 }
+
+/** The Session Last-time comes from (spec §4.8): its date, and its Sets of the Exercise by Line. */
+export interface LastTimeSession {
+  date: string;
+  lines: { sets: SavedSet[] }[];
+}
+
+/**
+ * Last-time of an Exercise and the prefill source: Last-time's first Working Set, or its first Set.
+ * Both null when nothing earlier has a Set of it. `exercise_id` is null for a name no Exercise has.
+ */
+export interface LastTime {
+  exercise_id: number | null;
+  last_time: LastTimeSession | null;
+  prefill: { reps: number; weight: string } | null;
+}
+
+function expectLastTime(v: unknown): LastTime {
+  if (
+    isObject(v) &&
+    (v.exercise_id === null || typeof v.exercise_id === 'number') &&
+    (v.last_time === null ||
+      (isObject(v.last_time) &&
+        typeof v.last_time.date === 'string' &&
+        Array.isArray(v.last_time.lines) &&
+        v.last_time.lines.every((l: unknown) => isObject(l) && Array.isArray(l.sets) && l.sets.every(isSet)))) &&
+    (v.prefill === null ||
+      (isObject(v.prefill) && typeof v.prefill.reps === 'number' && typeof v.prefill.weight === 'string'))
+  ) {
+    const last = v.last_time as LastTimeSession | null;
+    const prefill = v.prefill as LastTime['prefill'];
+    return {
+      exercise_id: v.exercise_id,
+      last_time: last && { date: last.date, lines: last.lines.map((l) => ({ sets: l.sets })) },
+      prefill: prefill && { reps: prefill.reps, weight: prefill.weight },
+    };
+  }
+  throw new Error('Unexpected answer from the API.');
+}
+
+/**
+ * Last-time of an Exercise for a Session being logged on `before` (the latest earlier Session with a
+ * Set of it, any Routine or Day). Name it by id, or by the name typed on a Line not yet saved.
+ */
+export async function getLastTime(before: string, exercise: { id: number } | { name: string }): Promise<LastTime> {
+  const which = 'id' in exercise ? `exercise_id=${exercise.id}` : `name=${encodeURIComponent(exercise.name)}`;
+  return expectLastTime(await request('GET', `last-time?before=${before}&${which}`));
+}

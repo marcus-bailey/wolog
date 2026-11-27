@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { AppRoutes } from '../App';
-import { localToday } from '../dates';
+import { localToday, shownDate } from '../dates';
 import { fakeTodayApi, type FakeRoutine } from './fakeApi';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -154,7 +154,7 @@ it('steppers move Weight by 5 and Reps by 1, never below 0 and 1, and the values
   expect(reps).toHaveValue('2');
 });
 
-it('Previous and Next Line, and the chip strip, move one Line at a time and clear the inputs', async () => {
+it('Previous and Next Line, and the chip strip, move one Line at a time and start its inputs afresh', async () => {
   fakeTodayApi([ppl()]);
   const logger = await startPush();
   expect(logger.getByRole('button', { name: 'Previous Line' })).toBeDisabled();
@@ -589,4 +589,231 @@ it('after Change Day, Up next follows the re-pinned Turn', async () => {
   await waitFor(() =>
     expect(fake.fetch.mock.calls.slice(changed + 1).map(([url]) => url)).toContain('/wolog/api/up-next'),
   );
+});
+
+// Last-time and prefill (spec §4.8, §5 Last-time card; LOG-7, LOG-2)
+
+function daysAgo(n: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return localToday(d);
+}
+
+type FakeSessions = Parameters<typeof fakeTodayApi>[1];
+type FakeLine = NonNullable<FakeSessions>[number]['lines'][number];
+let seq = 500;
+const set = (weight: string, reps: number, more: { warmup?: boolean; note?: string } = {}) => ({
+  id: seq++,
+  reps,
+  weight,
+  warmup: more.warmup ?? false,
+  note: more.note ?? null,
+});
+const line = (name: string, sets: ReturnType<typeof set>[]): FakeLine => ({
+  id: seq++,
+  exercise: { id: seq++, name, retired: false },
+  sets,
+});
+const past = (date: string, lines: FakeLine[], day = { id: 201, name: 'Full Body' }) => ({
+  id: seq++,
+  date,
+  routine: { id: 2, name: 'Upper Lower' },
+  day,
+  turn_id: null,
+  version: 1,
+  lines,
+});
+
+function card(logger: ReturnType<typeof within>) {
+  return within(logger.getByRole('region', { name: 'Last time' }));
+}
+
+it('every Line shows Last-time: the latest earlier Session with a Set of its Exercise, by Line, Warmups marked', async () => {
+  fakeTodayApi(
+    [ppl()],
+    [
+      past(daysAgo(9), [line('Bench Press', [set('100', 5)])]),
+      past(daysAgo(3), [
+        line('Bench Press', [set('95', 8, { warmup: true }), set('135', 5)]),
+        line('Rows', [set('95', 10)]),
+        line('Bench Press', [set('115', 10)]),
+      ]),
+      past(daysAgo(1), [line('Rows', [set('100', 10)]), line('Bench Press', [])]),
+    ],
+  );
+  const logger = await startPush();
+
+  const bench = card(logger);
+  expect(await bench.findByText('3 days ago')).toBeInTheDocument();
+  expect(bench.getByText(shownDate(daysAgo(3)))).toBeInTheDocument();
+  const lines = bench.getAllByRole('list');
+  expect(lines.map((l) => within(l).getAllByRole('listitem').map((li) => li.textContent))).toEqual([
+    ['95 × 8 Warmup', '135 × 5'],
+    ['115 × 10'],
+  ]);
+  expect(within(lines[0]!).getAllByRole('listitem')[0]).toHaveClass('warmup');
+  // Not the Routine or Day it came from.
+  expect(logger.getByRole('region', { name: 'Last time' })).not.toHaveTextContent(/Upper|Full Body/);
+
+  await userEvent.click(logger.getByRole('button', { name: 'Next Line' }));
+  expect(await card(logger).findByText('No earlier Sets')).toBeInTheDocument();
+});
+
+it('every Line of the same Exercise shows the same Last-time', async () => {
+  fakeTodayApi(
+    [{ ...ppl(), lines: { Push: ['Bench Press', 'Dips', 'Bench Press'] } }],
+    [past(daysAgo(2), [line('Bench Press', [set('135', 5)])])],
+  );
+  const logger = await startPush();
+  expect(await card(logger).findByText('2 days ago')).toBeInTheDocument();
+  const first = logger.getByRole('region', { name: 'Last time' }).textContent;
+
+  await userEvent.click(logger.getAllByRole('button', { name: /^Bench Press/ })[1]!);
+  expect(await card(logger).findByText('2 days ago')).toBeInTheDocument();
+  expect(logger.getByRole('region', { name: 'Last time' }).textContent).toBe(first);
+});
+
+it('with nothing earlier the card says so quietly, and the inputs start empty', async () => {
+  fakeTodayApi([ppl()]);
+  const logger = await startPush();
+
+  expect(await card(logger).findByText('No earlier Sets')).toBeInTheDocument();
+  expect(logger.getByLabelText('Weight (lb)')).toHaveValue('');
+  expect(logger.getByLabelText('Reps')).toHaveValue('');
+});
+
+it('today’s own Session is not Last-time; its Line prefills from its previous Set', async () => {
+  fakeTodayApi([ppl()], [{ ...past(localToday(), [line('Rows', [set('95', 10)])]), routine: { id: 1, name: 'PPL' }, day: { id: 101, name: 'Pull' } }]);
+  renderToday();
+  const logger = within(await screen.findByRole('region', { name: 'Logger' }));
+
+  expect(await card(logger).findByText('No earlier Sets')).toBeInTheDocument();
+  expect(logger.getByLabelText('Weight (lb)')).toHaveValue('95');
+  expect(logger.getByLabelText('Reps')).toHaveValue('10');
+});
+
+it('Notes collapse to a dot per Set with a count; tapping the card expands and collapses them', async () => {
+  fakeTodayApi(
+    [ppl()],
+    [past(daysAgo(4), [line('Bench Press', [set('135', 5, { note: 'grindy' }), set('135', 5), set('135', 4, { note: 'failed rep 5' })])])],
+  );
+  const logger = await startPush();
+  const region = await logger.findByRole('region', { name: 'Last time' });
+  const toggle = await within(region).findByRole('button', { name: /2 Notes/ });
+  expect(toggle).toHaveTextContent('· 2 Notes');
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  expect(within(region).queryByText('grindy')).not.toBeInTheDocument();
+  expect(within(region).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+    '135 × 5• Note',
+    '135 × 5',
+    '135 × 4• Note',
+  ]);
+
+  await userEvent.click(region);
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  expect(within(region).getByText('grindy')).toBeInTheDocument();
+  expect(within(region).getByText('failed rep 5')).toBeInTheDocument();
+
+  await userEvent.click(toggle);
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  expect(within(region).queryByText('grindy')).not.toBeInTheDocument();
+});
+
+it('a new Set prefills from Last-time’s first Working Set, then from the Line’s previous Set', async () => {
+  fakeTodayApi(
+    [ppl()],
+    [past(daysAgo(3), [line('Bench Press', [set('95', 8, { warmup: true }), set('135', 5), set('140', 3)])])],
+  );
+  const logger = await startPush();
+  await card(logger).findByText('3 days ago');
+
+  expect(logger.getByLabelText('Weight (lb)')).toHaveValue('135');
+  expect(logger.getByLabelText('Reps')).toHaveValue('5');
+  expect(logger.getByRole('button', { name: 'Working' })).toHaveAttribute('aria-pressed', 'false');
+  expect(logger.getByLabelText('Note')).toHaveValue('');
+
+  await fill(logger, '145', '4');
+  await userEvent.click(logger.getByRole('button', { name: 'Working' }));
+  await userEvent.type(logger.getByLabelText('Note'), 'heavy');
+  await userEvent.click(logger.getByRole('button', { name: 'Save Set 1' }));
+  await logger.findByRole('button', { name: 'Save Set 2' });
+
+  // The Line's previous Set, with the mark back to Working and no Note.
+  expect(logger.getByLabelText('Weight (lb)')).toHaveValue('145');
+  expect(logger.getByLabelText('Reps')).toHaveValue('4');
+  expect(logger.getByRole('button', { name: 'Working' })).toHaveAttribute('aria-pressed', 'false');
+  expect(logger.getByLabelText('Note')).toHaveValue('');
+
+  await userEvent.click(logger.getByRole('button', { name: 'Next Line' }));
+  await userEvent.click(logger.getByRole('button', { name: 'Previous Line' }));
+  expect(logger.getByLabelText('Weight (lb)')).toHaveValue('145');
+  expect(logger.getByLabelText('Reps')).toHaveValue('4');
+});
+
+it('with only Warmups last time, the prefill is its first Set', async () => {
+  fakeTodayApi([ppl()], [past(daysAgo(3), [line('Bench Press', [set('45', 10, { warmup: true }), set('95', 8, { warmup: true })])])]);
+  const logger = await startPush();
+  await card(logger).findByText('3 days ago');
+
+  expect(logger.getByLabelText('Weight (lb)')).toHaveValue('45');
+  expect(logger.getByLabelText('Reps')).toHaveValue('10');
+});
+
+it('a Line added by name before the first Set shows that Exercise’s Last-time', async () => {
+  fakeTodayApi([ppl()], [past(daysAgo(5), [line('Squat', [set('225', 5)])])]);
+  const logger = await startPush();
+  await userEvent.click(logger.getByRole('button', { name: '+ Line' }));
+  await userEvent.type(logger.getByLabelText('Exercise'), 'squat');
+  await userEvent.click(logger.getByRole('button', { name: 'Add' }));
+
+  expect(await card(logger).findByText('5 days ago')).toBeInTheDocument();
+  expect(logger.getByLabelText('Weight (lb)')).toHaveValue('225');
+});
+
+it('a Session on an earlier date shows Last-time from before that date', async () => {
+  fakeTodayApi(
+    [ppl()],
+    [
+      past(daysAgo(6), [line('Rows', [set('80', 10)])]),
+      { ...past(daysAgo(4), [line('Rows', [set('90', 10)])]), routine: { id: 1, name: 'PPL' }, day: { id: 101, name: 'Pull' } },
+      past(daysAgo(2), [line('Rows', [set('100', 10)])]),
+    ],
+  );
+  const logger = await startPush();
+  fireEvent.change(logger.getByLabelText('Date'), { target: { value: daysAgo(4) } });
+  expect(await screen.findByRole('heading', { name: 'Pull' })).toBeInTheDocument();
+
+  const opened = within(screen.getByRole('region', { name: 'Logger' }));
+  expect(await card(opened).findByText('80 × 10')).toBeInTheDocument();
+  expect(card(opened).getByText('2 days ago')).toBeInTheDocument();
+});
+
+it('a Last-time that failed to load is asked again when the Line is opened again', async () => {
+  const { fetch } = fakeTodayApi([ppl()], [past(daysAgo(3), [line('Bench Press', [set('135', 5)])])]);
+  const real = fetch.getMockImplementation()!;
+  let failures = 1;
+  fetch.mockImplementation((url: string, init?: RequestInit) =>
+    url.includes('last-time') && failures-- > 0 ? Promise.resolve(new Response('', { status: 500 })) : real(url, init),
+  );
+  const logger = await startPush();
+  expect(await card(logger).findByText('Last time couldn’t be loaded.')).toBeInTheDocument();
+  expect(logger.getByLabelText('Weight (lb)')).toHaveValue('');
+
+  await userEvent.click(logger.getByRole('button', { name: 'Next Line' }));
+  await userEvent.click(logger.getByRole('button', { name: 'Previous Line' }));
+  expect(await card(logger).findByText('3 days ago')).toBeInTheDocument();
+  expect(logger.getByLabelText('Weight (lb)')).toHaveValue('135');
+});
+
+it('after Remove Line, the Line taking its place shows its own prefill', async () => {
+  fakeTodayApi([ppl()], [past(daysAgo(3), [line('Dips', [set('25', 8)])])]);
+  const logger = await startPush();
+  await card(logger).findByText('No earlier Sets');
+  await fill(logger, '135', '5');
+
+  await userEvent.click(logger.getByRole('button', { name: 'Remove Line' }));
+  expect(await logger.findByRole('heading', { name: 'Dips' })).toBeInTheDocument();
+  await card(logger).findByText('3 days ago');
+  expect(logger.getByLabelText('Weight (lb)')).toHaveValue('25');
+  expect(logger.getByLabelText('Reps')).toHaveValue('8');
 });

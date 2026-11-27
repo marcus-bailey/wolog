@@ -100,6 +100,37 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
     };
   }
 
+  /**
+   * Last-time as the API derives it: the latest Session dated before `before` with a Set of the
+   * Exercise, its Sets by Line, and the prefill source. The fake matches Exercises by name, so
+   * seeded Sessions need not share the ids it hands out.
+   */
+  function lastTime(q: URLSearchParams) {
+    const before = q.get('before')!;
+    const id = q.get('exercise_id');
+    const typed = q.get('name');
+    const known = [
+      ...[...exerciseIds].map(([n, i]) => ({ id: i, name: n })),
+      ...sessions.flatMap((s) => s.lines.map((l) => l.exercise)),
+    ];
+    const asked = typed?.trim().replace(/\s+/g, ' ').toLowerCase();
+    const named = known.find((e) => (id !== null ? e.id === Number(id) : e.name.toLowerCase() === asked));
+    if (named === undefined) return { exercise_id: null, last_time: null, prefill: null };
+    const name = named.name;
+    const same = (l: FakeSession['lines'][number]) => l.exercise.name.toLowerCase() === name.toLowerCase();
+    const found = sessions
+      .filter((s) => s.date < before && s.lines.some((l) => same(l) && l.sets.length > 0))
+      .sort((a, b) => b.date.localeCompare(a.date))[0];
+    const lines = found ? found.lines.filter((l) => same(l) && l.sets.length > 0).map((l) => ({ sets: l.sets })) : [];
+    const sets = lines.flatMap((l) => l.sets);
+    const first = sets.find((s) => !s.warmup) ?? sets[0];
+    return {
+      exercise_id: named.id,
+      last_time: found ? { date: found.date, lines } : null,
+      prefill: first ? { reps: first.reps, weight: first.weight } : null,
+    };
+  }
+
   const withIds = (sets: (Omit<FakeSet, 'id'> & { id?: number })[]): FakeSet[] =>
     sets.map((s) => ({ ...s, id: s.id ?? nextId++ }));
 
@@ -135,6 +166,7 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
     if (path.startsWith('exercises')) {
       return json(200, [...exerciseIds.keys()].map(exercise).filter((e) => !e.retired));
     }
+    if (path.startsWith('last-time?')) return json(200, lastTime(new URLSearchParams(path.slice('last-time?'.length))));
     const on = /^sessions\/on\/(.+)$/.exec(path);
     if (on) return json(200, sessions.find((s) => s.date === on[1]) ?? null);
     const r = routines.find((x) => x.engaged)!;
