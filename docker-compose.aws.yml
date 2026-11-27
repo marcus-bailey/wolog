@@ -1,0 +1,39 @@
+# AWS server (apps.marcusbailey.com/wolog/, behind the login). Deployed by deploy/aws/deploy.sh
+# to /srv/wolog on the server, with its .env next to it; don't run it by hand from the repo.
+#
+# The images are built by CI on every commit to main (ghcr.io, private). WOLOG_TAG picks the
+# commit: sha-<7 chars>. The database is the server's shared Postgres (apps-postgres), with its
+# own `wolog` database and user; the server backs it up nightly to S3 (spec §9).
+#
+# Networks come from the server's own compose project (marcus-bailey/apps-server):
+#   apps-edge  nginx reaches wolog-frontend / wolog-backend
+#   apps-db    apps-postgres, internal only
+# Nothing publishes a port.
+
+name: wolog
+
+services:
+  wolog-frontend:
+    image: ghcr.io/marcus-bailey/wolog-frontend:${WOLOG_TAG:?Set WOLOG_TAG}
+    container_name: wolog-frontend
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/var/cache/nginx, /var/run, /tmp]
+    networks: [apps-edge]
+
+  wolog-backend:
+    image: ghcr.io/marcus-bailey/wolog-backend:${WOLOG_TAG:?Set WOLOG_TAG}
+    container_name: wolog-backend
+    restart: unless-stopped
+    read_only: true
+    environment:
+      # Migrations run first (alembic upgrade head), then one Uvicorn process.
+      # The password goes into a URL: keep it to URL-safe characters (the README makes it hex).
+      DATABASE_URL: postgresql+psycopg://wolog:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@apps-postgres:5432/wolog
+    networks: [apps-edge, apps-db]
+
+networks:
+  apps-edge:
+    external: true
+  apps-db:
+    external: true
