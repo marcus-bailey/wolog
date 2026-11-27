@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useId, useState, type FormEvent } from 'react';
-import { Link, useParams } from 'react-router';
+import { Link, useNavigate, useParams } from 'react-router';
 import { messageOf, Refused } from '../api';
 import { listExercises, type Exercise } from '../exercises/api';
 import {
   addLine,
   addTurn,
   createDay,
+  destroyDay,
+  destroyRoutine,
   dropDay,
+  duplicateDay,
+  duplicateRoutine,
   getRoutine,
   putBackDay,
   removeLine,
@@ -15,16 +19,24 @@ import {
   reorderLines,
   reorderTurns,
   type Day,
+  type Routine,
   type RoutineDetail as Detail,
 } from './api';
+import { useRoutines } from './RoutinesContext';
 
 /**
- * Routine detail (spec §5): the rotation as numbered Turns with the next one marked, then the Days, each expandable to edit
- * its Lines and to Drop it from or Put it back on the rotation, and Create Day at the bottom. Lines
- * are added by typing an Exercise's name; the picker offers live Exercises only.
+ * Routine detail (spec §5): Duplicate and Destroy for the Routine, the rotation as numbered Turns
+ * with the next one marked, then the Days, each expandable to edit its Lines, to Drop it from or Put
+ * it back on the rotation, to Duplicate it to a Routine and to Destroy it, and Create Day at the
+ * bottom. Lines are added by typing an Exercise's name; the picker offers live Exercises only.
  */
 export function RoutineDetail() {
-  const routineId = Number(useParams().routineId);
+  const routineId = useParams().routineId;
+  // A fresh screen per Routine, so opening a duplicate starts from its own state.
+  return <RoutineScreen key={routineId} routineId={Number(routineId)} />;
+}
+
+function RoutineScreen({ routineId }: { routineId: number }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [picks, setPicks] = useState<Exercise[]>([]);
@@ -76,6 +88,7 @@ export function RoutineDetail() {
         {detail.name}
         {detail.engaged && <span className="engaged"> ● Engaged</span>}
       </h1>
+      <RoutineActions routine={detail} />
       <RotationEditor detail={detail} onChanged={setDetail} onStale={reload} />
       <h2>Days</h2>
       {detail.days.length === 0 ? (
@@ -86,6 +99,7 @@ export function RoutineDetail() {
             <DayItem
               key={day.id}
               day={day}
+              routine={detail}
               onRotation={detail.rotation.some((t) => t.day_id === day.id)}
               picks={picks}
               onChanged={dayChanged}
@@ -104,6 +118,133 @@ export function RoutineDetail() {
           ))}
       </datalist>
     </main>
+  );
+}
+
+/** Duplicate the Routine under a new name (then open the copy), or Destroy it after confirming. */
+function RoutineActions({ routine }: { routine: Routine }) {
+  const { saved, removed } = useRoutines();
+  const navigate = useNavigate();
+  const [mode, setMode] = useState<'duplicate' | 'destroy' | null>(null);
+  const [name, setName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function act(action: () => Promise<void>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+    } catch (e) {
+      setError(messageOf(e));
+      if (mode === 'destroy') setMode(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const onDuplicate = (event: FormEvent) => {
+    event.preventDefault();
+    void act(async () => {
+      const copy = await duplicateRoutine(routine.id, name);
+      saved({ id: copy.id, name: copy.name, engaged: copy.engaged });
+      void navigate(`/routines/${copy.id}`);
+    });
+  };
+
+  const onDestroy = () =>
+    act(async () => {
+      try {
+        await destroyRoutine(routine.id);
+      } catch (e) {
+        // Destroyed elsewhere already: the outcome asked for.
+        if (!(e instanceof Refused && e.code === 'not_found')) throw e;
+      }
+      removed(routine.id);
+      void navigate('/routines');
+    });
+
+  return (
+    <section aria-label="Routine actions">
+      {mode === 'duplicate' ? (
+        <form onSubmit={onDuplicate}>
+          <label htmlFor="duplicate-routine">Name of the new Routine</label>
+          <div className="row">
+            <input
+              id="duplicate-routine"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoComplete="off"
+              autoFocus
+            />
+            <button type="submit" disabled={busy}>
+              Duplicate
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => {
+                setMode(null);
+                setError(null);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="quiet">Copies every Day with its Lines, and the rotation. No Sessions or Skips.</p>
+        </form>
+      ) : (
+        <div className="row actions">
+          <button
+            type="button"
+            className="secondary"
+            aria-label={`Duplicate ${routine.name}`}
+            disabled={busy}
+            onClick={() => {
+              setName(`${routine.name} copy`);
+              setError(null);
+              setMode('duplicate');
+            }}
+          >
+            Duplicate
+          </button>
+          <button
+            type="button"
+            className="secondary danger"
+            aria-label={`Destroy ${routine.name}`}
+            disabled={busy || mode === 'destroy'}
+            onClick={() => {
+              setError(null);
+              setMode('destroy');
+            }}
+          >
+            Destroy
+          </button>
+        </div>
+      )}
+      {mode === 'destroy' && (
+        <div className="confirm" role="group" aria-label={`Destroy ${routine.name}`}>
+          <p>
+            Destroy “{routine.name}” for good? Its Days, Lines and rotation go with it; its Exercises stay in the
+            library. This can’t be undone.
+          </p>
+          <div className="row actions">
+            <button type="button" className="danger-solid" disabled={busy} onClick={() => void onDestroy()}>
+              Destroy for good
+            </button>
+            <button type="button" className="secondary" disabled={busy} onClick={() => setMode(null)}>
+              Keep it
+            </button>
+          </div>
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="refusal">
+          {error}
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -270,6 +411,8 @@ function RotationEditor({ detail, onChanged, onStale }: RotationProps) {
 
 interface DayProps {
   day: Day;
+  /** The Routine the Day belongs to. */
+  routine: Routine;
   /** Whether the Day has at least one Turn. */
   onRotation: boolean;
   picks: Exercise[];
@@ -279,35 +422,60 @@ interface DayProps {
   onStale: () => Promise<void>;
 }
 
-function DayItem({ day, onRotation, picks, onChanged, onRotationChanged, onStale }: DayProps) {
+function DayItem({ day, routine, onRotation, picks, onChanged, onRotationChanged, onStale }: DayProps) {
   const id = useId();
   const [open, setOpen] = useState(false);
-  const [renaming, setRenaming] = useState(false);
+  const [mode, setMode] = useState<'rename' | 'duplicate' | 'destroy' | null>(null);
   const [name, setName] = useState(day.name);
   const [exerciseName, setExerciseName] = useState('');
   const [error, setError] = useState<string | null>(null);
+  /** The refusal was that something pins the Day: offer Drop instead. */
+  const [offerDrop, setOfferDrop] = useState(false);
+  /** Where the last copy into another Routine went. */
+  const [copied, setCopied] = useState<{ routine: Routine; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function act(action: () => Promise<void>) {
     setBusy(true);
     setError(null);
+    setOfferDrop(false);
+    setCopied(null);
     try {
       await action();
     } catch (e) {
       setError(messageOf(e));
+      if (mode === 'destroy') setMode(null);
+      if (e instanceof Refused && e.code === 'day_pinned') setOfferDrop(true);
       if (e instanceof Refused && ['lines_changed', 'not_found', 'day_on_rotation'].includes(e.code)) await onStale();
     } finally {
       setBusy(false);
     }
   }
 
+  const drop = () => void act(async () => onRotationChanged(await dropDay(day.id)));
+
   const onRename = (event: FormEvent) => {
     event.preventDefault();
     void act(async () => {
       onChanged(await renameDay(day.id, name));
-      setRenaming(false);
+      setMode(null);
     });
   };
+
+  const onDuplicate = (target: number, copyName: string) =>
+    act(async () => {
+      const into = await duplicateDay(day.id, target, copyName);
+      setMode(null);
+      if (into.id === routine.id) onRotationChanged(into);
+      else setCopied({ routine: into, name: into.days.at(-1)?.name ?? copyName });
+    });
+
+  const onDestroy = () =>
+    act(async () => {
+      const detail = await destroyDay(day.id);
+      setMode(null);
+      onRotationChanged(detail); // the Day is gone from it
+    });
 
   const onAdd = (event: FormEvent) => {
     event.preventDefault();
@@ -404,7 +572,7 @@ function DayItem({ day, onRotation, picks, onChanged, onRotationChanged, onStale
               </button>
             </div>
           </form>
-          {renaming ? (
+          {mode === 'rename' ? (
             <form onSubmit={onRename}>
               <label htmlFor={`${id}-name`}>Day name</label>
               <div className="row">
@@ -418,11 +586,22 @@ function DayItem({ day, onRotation, picks, onChanged, onRotationChanged, onStale
                 <button type="submit" disabled={busy}>
                   Rename
                 </button>
-                <button type="button" className="secondary" disabled={busy} onClick={() => setRenaming(false)}>
+                <button type="button" className="secondary" disabled={busy} onClick={() => setMode(null)}>
                   Cancel
                 </button>
               </div>
             </form>
+          ) : mode === 'duplicate' ? (
+            <DuplicateDay
+              day={day}
+              routine={routine}
+              busy={busy}
+              onDuplicate={(target, copyName) => void onDuplicate(target, copyName)}
+              onCancel={() => {
+                setMode(null);
+                setError(null);
+              }}
+            />
           ) : (
             <div className="row actions">
               {onRotation ? (
@@ -431,7 +610,7 @@ function DayItem({ day, onRotation, picks, onChanged, onRotationChanged, onStale
                   className="secondary"
                   aria-label={`Drop ${day.name} from the rotation`}
                   disabled={busy}
-                  onClick={() => void act(async () => onRotationChanged(await dropDay(day.id)))}
+                  onClick={drop}
                 >
                   Drop from rotation
                 </button>
@@ -453,20 +632,135 @@ function DayItem({ day, onRotation, picks, onChanged, onRotationChanged, onStale
                 onClick={() => {
                   setName(day.name);
                   setError(null);
-                  setRenaming(true);
+                  setMode('rename');
                 }}
               >
                 Rename
               </button>
+              <button
+                type="button"
+                className="secondary"
+                aria-label={`Duplicate ${day.name} to…`}
+                disabled={busy}
+                onClick={() => {
+                  setError(null);
+                  setCopied(null);
+                  setMode('duplicate');
+                }}
+              >
+                Duplicate to…
+              </button>
+              <button
+                type="button"
+                className="secondary danger"
+                aria-label={`Destroy ${day.name}`}
+                disabled={busy || mode === 'destroy'}
+                onClick={() => {
+                  setError(null);
+                  setOfferDrop(false);
+                  setMode('destroy');
+                }}
+              >
+                Destroy
+              </button>
             </div>
           )}
-          {error && (
-            <p role="alert" className="refusal">
-              {error}
+          {mode === 'destroy' && (
+            <div className="confirm" role="group" aria-label={`Destroy ${day.name}`}>
+              <p>
+                Destroy “{day.name}” for good? Its Lines and Turns go with it; its Exercises stay in the library. This
+                can’t be undone.
+              </p>
+              <div className="row actions">
+                <button type="button" className="danger-solid" disabled={busy} onClick={() => void onDestroy()}>
+                  Destroy for good
+                </button>
+                <button type="button" className="secondary" disabled={busy} onClick={() => setMode(null)}>
+                  Keep it
+                </button>
+              </div>
+            </div>
+          )}
+          {copied && (
+            <p role="status">
+              Copied to <Link to={`/routines/${copied.routine.id}`}>{copied.routine.name}</Link> as “{copied.name}”.
             </p>
+          )}
+          {error && (
+            <div role="alert" className="refusal">
+              <p>{error}</p>
+              {offerDrop && onRotation && (
+                <button
+                  type="button"
+                  className="secondary"
+                  aria-label={`Drop ${day.name} from the rotation instead`}
+                  disabled={busy}
+                  onClick={drop}
+                >
+                  Drop from rotation instead
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
     </li>
+  );
+}
+
+interface DuplicateDayProps {
+  day: Day;
+  routine: Routine;
+  busy: boolean;
+  onDuplicate: (routineId: number, name: string) => void;
+  onCancel: () => void;
+}
+
+/**
+ * "Duplicate to…" a Routine: this one or another. The copy needs a name unique there, so into this
+ * Routine it starts as "‹Day› copy", and into another as the Day's own name.
+ */
+function DuplicateDay({ day, routine, busy, onDuplicate, onCancel }: DuplicateDayProps) {
+  const id = useId();
+  const { routines } = useRoutines();
+  const nameFor = (target: number) => (target === routine.id ? `${day.name} copy` : day.name);
+  const [target, setTarget] = useState(routine.id);
+  const [name, setName] = useState(nameFor(routine.id));
+  const targets = routines?.some((r) => r.id === routine.id) ? routines : [routine, ...(routines ?? [])];
+
+  const onSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    onDuplicate(target, name);
+  };
+
+  return (
+    <form onSubmit={onSubmit}>
+      <label htmlFor={`${id}-target`}>Into Routine</label>
+      <select
+        id={`${id}-target`}
+        value={target}
+        onChange={(e) => {
+          const next = Number(e.target.value);
+          if (name === nameFor(target)) setName(nameFor(next)); // keep a name the owner typed
+          setTarget(next);
+        }}
+      >
+        {targets.map((r) => (
+          <option key={r.id} value={r.id}>
+            {r.name}
+          </option>
+        ))}
+      </select>
+      <label htmlFor={`${id}-copy`}>Name of the copy</label>
+      <div className="row">
+        <input id={`${id}-copy`} value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" />
+        <button type="submit" disabled={busy}>
+          Duplicate
+        </button>
+        <button type="button" className="secondary" disabled={busy} onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }

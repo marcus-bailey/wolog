@@ -48,14 +48,14 @@ def _out(r: Routine) -> RoutineOut:
     return RoutineOut(id=r.id, name=r.name, engaged=r.engaged)
 
 
-def _lock(db: Session) -> None:
+def lock_routines(db: Session) -> None:
     """Every Routine write takes this lock until its transaction ends, so writes run one at a time:
     two first Routines can't both be engaged, two switches can't cross, and a name checked free stays
     free until it is written. Reads are not blocked."""
     db.execute(text("lock table routine in exclusive mode"))
 
 
-def _valid_name(db: Session, raw: str, routine: Routine | None) -> str:
+def valid_name(db: Session, raw: str, routine: Routine | None) -> str:
     """The normalised name, refused if empty or held by another Routine."""
     name = names.normalise(raw)
     if not name:
@@ -83,9 +83,9 @@ def list_routines(db: DbSession) -> list[RoutineOut]:
 @router.post("", status_code=status.HTTP_201_CREATED, responses=documented(409, 422))
 def create_routine(body: RoutineIn, db: DbSession) -> RoutineOut:
     """A Routine with a name only: no Days and an empty rotation. The first one is engaged; later ones are not."""
-    _lock(db)
+    lock_routines(db)
     first = db.scalar(select(Routine.id).limit(1)) is None
-    routine = Routine(name=_valid_name(db, body.name, None), engaged=first)
+    routine = Routine(name=valid_name(db, body.name, None), engaged=first)
     db.add(routine)
     db.flush()
     return _out(routine)
@@ -94,9 +94,9 @@ def create_routine(body: RoutineIn, db: DbSession) -> RoutineOut:
 @router.patch("/{routine_id}", responses=documented(404, 409, 422))
 def rename_routine(routine_id: int, body: RoutineIn, db: DbSession) -> RoutineOut:
     """Rename is a label change. A name held by another Routine is refused."""
-    _lock(db)
+    lock_routines(db)
     routine = _get(db, routine_id)
-    routine.name = _valid_name(db, body.name, routine)
+    routine.name = valid_name(db, body.name, routine)
     db.flush()
     return _out(routine)
 
@@ -105,7 +105,7 @@ def rename_routine(routine_id: int, body: RoutineIn, db: DbSession) -> RoutineOu
 def engage_routine(routine_id: int, db: DbSession) -> RoutineOut:
     """Switch the Engaged Routine to this one. Engaging the Engaged Routine changes nothing.
     Only where new work goes changes; existing Sessions and Skips are untouched."""
-    _lock(db)
+    lock_routines(db)
     routine = _get(db, routine_id)
     if not routine.engaged:
         # Clear first, then set: the unique index allows one engaged row at any moment.

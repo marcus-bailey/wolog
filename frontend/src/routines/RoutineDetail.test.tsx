@@ -1,8 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { RoutineDetail } from './RoutineDetail';
+import { RoutinesProvider } from './RoutinesContext';
 import type { Exercise } from '../exercises/api';
 import type { Day, Turn } from './api';
 
@@ -23,6 +24,15 @@ function fakeApi(exercises: Exercise[] = [], days: Day[] = [], rotation?: Turn[]
     rotation: rotation ?? days.map((d) => ({ id: d.id + 1000, day_id: d.id })),
     /** The next Turn; none unless a test sets it. */
     next: undefined as number | undefined,
+    /** Every Routine; this one (PPL) is 1. */
+    routines: [
+      { id: 1, name: 'PPL', engaged: true },
+      { id: 2, name: 'Upper Lower', engaged: false },
+    ],
+    /** Days a Session or Skip points at. */
+    pinned: new Set<number>(),
+    /** Whether a Session or Skip points at this Routine. */
+    routinePinned: false,
   };
   const detail = () => ({
     id: 1,
@@ -37,6 +47,51 @@ function fakeApi(exercises: Exercise[] = [], days: Day[] = [], rotation?: Turn[]
     const method = init?.method ?? 'GET';
     const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
     if (method === 'GET' && path === 'routines/1') {
+      return json(200, detail());
+    }
+    if (method === 'GET' && path === 'routines') return json(200, state.routines);
+    const copied = /^routines\/(\d+)$/.exec(path);
+    const copy = copied && Number(copied[1]) > 2 && state.routines.find((r) => r.id === Number(copied[1]));
+    if (method === 'GET' && copy) return json(200, { ...detail(), ...copy });
+    if (method === 'POST' && path === 'routines/1/duplicate') {
+      const name = norm(body.name as string);
+      const other = state.routines.find((r) => r.name.toLowerCase() === name.toLowerCase());
+      if (other) return json(409, { code: 'name_taken', message: `There is already a Routine called “${other.name}”.` });
+      const copy = { id: nextId++, name, engaged: false };
+      state.routines.push(copy);
+      return json(201, { ...detail(), ...copy, next_turn_id: null });
+    }
+    if (method === 'DELETE' && path === 'routines/1') {
+      if (state.routinePinned) {
+        return json(409, { code: 'routine_pinned', message: '“PPL” can’t be destroyed: 1 Session points at it or its Days.' });
+      }
+      state.routines = state.routines.filter((r) => r.id !== 1);
+      return new Response(null, { status: 204 });
+    }
+    const dup = /^days\/(\d+)\/duplicate$/.exec(path);
+    if (dup && method === 'POST') {
+      const source = state.days.find((d) => d.id === Number(dup[1]))!;
+      const name = norm(body.name as string);
+      if (body.routine_id !== 1) return json(201, { id: body.routine_id, name: 'Upper Lower', engaged: false, days: [], rotation: [], next_turn_id: null });
+      const other = state.days.find((d) => d.name.toLowerCase() === name.toLowerCase());
+      if (other) return json(409, { code: 'name_taken', message: `There is already a Day called “${other.name}” in “PPL”.` });
+      const copy = { id: nextId++, name, lines: source.lines.map((l) => ({ id: nextId++, exercise: l.exercise })) };
+      state.days.push(copy);
+      state.rotation.push({ id: nextId++, day_id: copy.id });
+      return json(201, detail());
+    }
+    const destroy = /^days\/(\d+)$/.exec(path);
+    if (destroy && method === 'DELETE') {
+      const dayId = Number(destroy[1]);
+      const name = state.days.find((d) => d.id === dayId)?.name;
+      if (state.pinned.has(dayId)) {
+        return json(409, {
+          code: 'day_pinned',
+          message: `“${name}” can’t be destroyed: 1 Session points at it. Drop it from the rotation instead; it stays in the Routine with its Lines.`,
+        });
+      }
+      state.days = state.days.filter((d) => d.id !== dayId);
+      state.rotation = state.rotation.filter((t) => t.day_id !== dayId);
       return json(200, detail());
     }
     if (path === 'routines/1/turns' && method === 'POST') {
@@ -108,9 +163,12 @@ function fakeApi(exercises: Exercise[] = [], days: Day[] = [], rotation?: Turn[]
 function renderDetail() {
   render(
     <MemoryRouter initialEntries={['/routines/1']}>
-      <Routes>
-        <Route path="/routines/:routineId" element={<RoutineDetail />} />
-      </Routes>
+      <RoutinesProvider>
+        <Routes>
+          <Route path="/routines" element={<h1>All Routines</h1>} />
+          <Route path="/routines/:routineId" element={<RoutineDetail />} />
+        </Routes>
+      </RoutinesProvider>
     </MemoryRouter>,
   );
 }
@@ -421,4 +479,176 @@ it('marks the next Turn', async () => {
   renderDetail();
   await screen.findByRole('list', { name: 'Rotation' });
   expect(rotationNames()).toEqual(['1 Push', '2 Pull · next', '3 Legs']);
+});
+
+// Duplicate and Destroy a Day (DAY-1 destroy, DAY-4)
+
+const pushed = { id: 10, name: 'Push', lines: [{ id: 20, exercise: bench }, { id: 21, exercise: fly }] };
+
+it('duplicates a Day into this Routine: same Exercises, a new name, one Turn at the end', async () => {
+  const { fetch } = fakeApi([], [pushed, pull]);
+  renderDetail();
+  await expand('Push');
+
+  await userEvent.click(screen.getByRole('button', { name: 'Duplicate Push to…' }));
+  expect(screen.getByLabelText('Into Routine')).toHaveValue('1');
+  const name = screen.getByLabelText('Name of the copy');
+  expect(name).toHaveValue('Push copy');
+  await userEvent.clear(name);
+  await userEvent.type(name, 'Push heavy');
+  await userEvent.click(screen.getByRole('button', { name: 'Duplicate' }));
+
+  await screen.findByRole('button', { name: /^Push heavy/ });
+  expect(rotationNames()).toEqual(['1 Push', '2 Pull', '3 Push heavy']);
+  expect(fetch).toHaveBeenLastCalledWith(
+    '/wolog/api/days/10/duplicate',
+    expect.objectContaining({ method: 'POST', body: JSON.stringify({ routine_id: 1, name: 'Push heavy' }) }),
+  );
+  expect(screen.queryByLabelText('Name of the copy')).not.toBeInTheDocument();
+});
+
+it('duplicates a Day into another Routine, keeping its name, and says where it went', async () => {
+  const { fetch } = fakeApi([], [pushed]);
+  renderDetail();
+  await expand('Push');
+
+  await userEvent.click(screen.getByRole('button', { name: 'Duplicate Push to…' }));
+  await userEvent.selectOptions(screen.getByLabelText('Into Routine'), 'Upper Lower');
+  expect(screen.getByLabelText('Name of the copy')).toHaveValue('Push');
+  await userEvent.click(screen.getByRole('button', { name: 'Duplicate' }));
+
+  expect(await screen.findByRole('status')).toHaveTextContent('Copied to Upper Lower as “Push”.');
+  expect(screen.getByRole('link', { name: 'Upper Lower' })).toHaveAttribute('href', '/routines/2');
+  expect(rotationNames()).toEqual(['1 Push']);
+  expect(fetch).toHaveBeenLastCalledWith(
+    '/wolog/api/days/10/duplicate',
+    expect.objectContaining({ body: JSON.stringify({ routine_id: 2, name: 'Push' }) }),
+  );
+});
+
+it('shows a duplicate Day’s name collision and keeps the form', async () => {
+  fakeApi([], [pushed, pull]);
+  renderDetail();
+  await expand('Push');
+  await userEvent.click(screen.getByRole('button', { name: 'Duplicate Push to…' }));
+  await userEvent.clear(screen.getByLabelText('Name of the copy'));
+  await userEvent.type(screen.getByLabelText('Name of the copy'), 'pull');
+  await userEvent.click(screen.getByRole('button', { name: 'Duplicate' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('There is already a Day called “Pull” in “PPL”.');
+  expect(screen.getByLabelText('Name of the copy')).toHaveValue('pull');
+});
+
+it('destroys a Day nothing pins after confirming; its Turns go with it', async () => {
+  const { fetch } = fakeApi([], [pushed, pull]);
+  renderDetail();
+  await expand('Push');
+
+  await userEvent.click(screen.getByRole('button', { name: 'Destroy Push' }));
+  const confirm = screen.getByRole('group', { name: 'Destroy Push' });
+  expect(confirm).toHaveTextContent('Its Lines and Turns go with it; its Exercises stay in the library.');
+  await userEvent.click(within(confirm).getByRole('button', { name: 'Keep it' }));
+  expect(screen.queryByRole('group', { name: 'Destroy Push' })).not.toBeInTheDocument();
+  expect(fetch).not.toHaveBeenCalledWith('/wolog/api/days/10', expect.objectContaining({ method: 'DELETE' }));
+
+  await userEvent.click(screen.getByRole('button', { name: 'Destroy Push' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Destroy for good' }));
+  await waitForGone('Push');
+  expect(rotationNames()).toEqual(['1 Pull']);
+  expect(fetch).toHaveBeenLastCalledWith('/wolog/api/days/10', expect.objectContaining({ method: 'DELETE' }));
+});
+
+it('a pinned Day’s refusal says why and offers Drop', async () => {
+  const { state } = fakeApi([], [pushed, pull]);
+  state.pinned.add(10);
+  renderDetail();
+  await expand('Push');
+
+  await userEvent.click(screen.getByRole('button', { name: 'Destroy Push' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Destroy for good' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('“Push” can’t be destroyed: 1 Session points at it.');
+  expect(screen.queryByRole('group', { name: 'Destroy Push' })).not.toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: 'Drop Push from the rotation instead' }));
+  await screen.findByRole('button', { name: 'Put Push back on the rotation' });
+  expect(rotationNames()).toEqual(['1 Pull']);
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+// Duplicate and Destroy the Routine (RTN-3, RTN-4)
+
+it('duplicates the Routine under a new name and opens the copy', async () => {
+  const { fetch } = fakeApi([], [pushed]);
+  renderDetail();
+  await screen.findByRole('heading', { name: /^PPL/ });
+
+  await userEvent.click(screen.getByRole('button', { name: 'Duplicate PPL' }));
+  const name = screen.getByLabelText('Name of the new Routine');
+  expect(name).toHaveValue('PPL copy');
+  await userEvent.clear(name);
+  await userEvent.type(name, 'upper lower');
+  await userEvent.click(screen.getByRole('button', { name: 'Duplicate' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('There is already a Routine called “Upper Lower”.');
+
+  await userEvent.clear(name);
+  await userEvent.type(name, 'PPL block 2');
+  await userEvent.click(screen.getByRole('button', { name: 'Duplicate' }));
+  expect(fetch).toHaveBeenCalledWith(
+    '/wolog/api/routines/1/duplicate',
+    expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'PPL block 2' }) }),
+  );
+  expect(await screen.findByRole('heading', { name: 'PPL block 2' })).toBeInTheDocument();
+  expect(await screen.findByRole('button', { name: /^Push/ })).toBeInTheDocument();
+});
+
+it('destroys the Routine after confirming and goes back to the Routines list', async () => {
+  const { fetch } = fakeApi([], [pushed]);
+  renderDetail();
+  await screen.findByRole('heading', { name: /^PPL/ });
+
+  await userEvent.click(screen.getByRole('button', { name: 'Destroy PPL' }));
+  const confirm = screen.getByRole('group', { name: 'Destroy PPL' });
+  expect(confirm).toHaveTextContent('Its Days, Lines and rotation go with it; its Exercises stay in the library.');
+  await userEvent.click(within(confirm).getByRole('button', { name: 'Destroy for good' }));
+
+  expect(await screen.findByRole('heading', { name: 'All Routines' })).toBeInTheDocument();
+  expect(fetch).toHaveBeenCalledWith('/wolog/api/routines/1', expect.objectContaining({ method: 'DELETE' }));
+});
+
+it('shows why the Routine can’t be destroyed and stays', async () => {
+  const { state } = fakeApi([], [pushed]);
+  state.routinePinned = true;
+  renderDetail();
+  await screen.findByRole('heading', { name: /^PPL/ });
+
+  await userEvent.click(screen.getByRole('button', { name: 'Destroy PPL' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Destroy for good' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('“PPL” can’t be destroyed: 1 Session points at it or its Days.');
+  expect(screen.getByRole('heading', { name: /^PPL/ })).toBeInTheDocument();
+});
+
+async function waitForGone(dayName: string) {
+  await waitFor(() => expect(screen.queryByRole('button', { name: new RegExp(`^${dayName}`) })).not.toBeInTheDocument());
+}
+
+it('Cancel after a refused Duplicate clears the refusal', async () => {
+  fakeApi([], [pushed]);
+  renderDetail();
+  await screen.findByRole('heading', { name: /^PPL/ });
+  await userEvent.click(screen.getByRole('button', { name: 'Duplicate PPL' }));
+  await userEvent.clear(screen.getByLabelText('Name of the new Routine'));
+  await userEvent.type(screen.getByLabelText('Name of the new Routine'), 'Upper Lower');
+  await userEvent.click(screen.getByRole('button', { name: 'Duplicate' }));
+  await screen.findByRole('alert');
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+it('a Routine already destroyed elsewhere goes back to the Routines list', async () => {
+  const { fetch } = fakeApi([], [pushed]);
+  renderDetail();
+  await screen.findByRole('heading', { name: /^PPL/ });
+  fetch.mockResolvedValueOnce(json(404, { code: 'not_found', message: 'That Routine no longer exists.' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Destroy PPL' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Destroy for good' }));
+  expect(await screen.findByRole('heading', { name: 'All Routines' })).toBeInTheDocument();
 });

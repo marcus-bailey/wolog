@@ -7,8 +7,10 @@ interface Routines {
   routines: Routine[] | null;
   /** Why the Routines couldn't be loaded. */
   loadError: string | null;
-  /** Record a Routine the API created or renamed. */
+  /** Record a Routine the API created, renamed or duplicated. */
   saved: (routine: Routine) => void;
+  /** Forget a Routine the API destroyed. */
+  removed: (id: number) => void;
   /** Switch the Engaged Routine. Rejects with the API's refusal. */
   engage: (id: number) => Promise<void>;
   /** Load the Routines again, e.g. after a refusal says they changed elsewhere. */
@@ -45,6 +47,10 @@ export function RoutinesProvider({ children }: { children: ReactNode }) {
     setRoutines((list) => sortByName([...(list ?? []).filter((r) => r.id !== routine.id), routine]));
   }, []);
 
+  const removed = useCallback((id: number) => {
+    setRoutines((list) => list && list.filter((r) => r.id !== id));
+  }, []);
+
   const engage = useCallback(async (id: number) => {
     const engaged = await engageRoutine(id);
     setRoutines((list) =>
@@ -55,8 +61,8 @@ export function RoutinesProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ routines, loadError, saved, engage, reload }),
-    [routines, loadError, saved, engage, reload],
+    () => ({ routines, loadError, saved, removed, engage, reload }),
+    [routines, loadError, saved, removed, engage, reload],
   );
   return <RoutinesContext.Provider value={value}>{children}</RoutinesContext.Provider>;
 }

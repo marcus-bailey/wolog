@@ -145,22 +145,33 @@ def get_routine(db: Session, routine_id: int, *, lock: bool = False) -> Routine:
 
 def _get_day(db: Session, day_id: int) -> Day:
     """The Day, locked FOR UPDATE: its Lines change one request at a time."""
-    day = db.get(Day, day_id, with_for_update=True) if 1 <= day_id <= MAX_ID else None
+    # populate_existing: a Day already loaded (see `lock_day`) takes the values it has once locked.
+    day = db.get(Day, day_id, with_for_update=True, populate_existing=True) if 1 <= day_id <= MAX_ID else None
     if day is None:
         raise Refusal(status.HTTP_404_NOT_FOUND, "not_found", "That Day no longer exists.")
     return day
 
 
-def _valid_name(db: Session, raw: str, routine_id: int, day: Day | None) -> str:
-    """The normalised name, refused if empty or held by another Day of the Routine. The caller holds
-    the Routine's lock, so the name stays free until it is written."""
+def lock_day(db: Session, day_id: int) -> tuple[Routine, Day]:
+    """The Day and its Routine, both locked FOR UPDATE: the Routine first, then the Day, the order
+    Session writes take them in, so the two can't deadlock."""
+    found = db.get(Day, day_id) if 1 <= day_id <= MAX_ID else None
+    if found is None:
+        raise Refusal(status.HTTP_404_NOT_FOUND, "not_found", "That Day no longer exists.")
+    routine = get_routine(db, found.routine_id, lock=True)
+    return routine, _get_day(db, day_id)
+
+
+def valid_day_name(db: Session, raw: str, routine_id: int, day: Day | None, where: str = "this Routine") -> str:
+    """The normalised name, refused if empty or held by another Day of the Routine (`where` names it in
+    the refusal). The caller holds the Routine's lock, so the name stays free until it is written."""
     name = names.normalise(raw)
     if not name:
         raise Refusal(status.HTTP_422_UNPROCESSABLE_CONTENT, "name_empty", "A Day needs a name.")
     other = db.scalar(select(Day).where(Day.routine_id == routine_id, func.lower(Day.name) == func.lower(name)))
     if other is not None and other is not day:
         raise Refusal(
-            status.HTTP_409_CONFLICT, "name_taken", f"There is already a Day called “{other.name}” in this Routine."
+            status.HTTP_409_CONFLICT, "name_taken", f"There is already a Day called “{other.name}” in {where}."
         )
     return name
 
@@ -216,7 +227,7 @@ def day_detail(day_id: int, db: DbSession) -> DayOut:
 def create_day(routine_id: int, body: DayIn, db: DbSession) -> DayOut:
     """A Day with a name and no Lines, and one Turn at the end of the rotation."""
     routine = get_routine(db, routine_id, lock=True)
-    day = Day(routine_id=routine.id, name=_valid_name(db, body.name, routine.id, None))
+    day = Day(routine_id=routine.id, name=valid_day_name(db, body.name, routine.id, None))
     db.add(day)
     db.flush()
     append_turn(db, routine, day.id)
@@ -226,9 +237,8 @@ def create_day(routine_id: int, body: DayIn, db: DbSession) -> DayOut:
 @router.patch("/api/days/{day_id}", responses=documented(404, 409, 422))
 def rename_day(day_id: int, body: DayIn, db: DbSession) -> DayOut:
     """Rename is a label change. A name held by another Day of the same Routine is refused."""
-    day = _get_day(db, day_id)
-    get_routine(db, day.routine_id, lock=True)
-    day.name = _valid_name(db, body.name, day.routine_id, day)
+    _, day = lock_day(db, day_id)
+    day.name = valid_day_name(db, body.name, day.routine_id, day)
     db.flush()
     return _day_out(db, day)
 
