@@ -62,6 +62,8 @@ export interface RoutineDetail extends Routine {
   /** In the order they were created. */
   days: Day[];
   rotation: Turn[];
+  /** The Turn the suggestion is on (the next one to log), or null with an empty rotation. */
+  next_turn_id: number | null;
 }
 
 function isLine(value: unknown): value is Line {
@@ -93,10 +95,16 @@ export async function getRoutine(id: number): Promise<RoutineDetail> {
 function expectDetail(body: unknown): RoutineDetail {
   const routine = expectRoutine(body);
   const v = body as Record<string, unknown>;
-  if (!Array.isArray(v.days) || !Array.isArray(v.rotation) || !v.rotation.every(isTurn)) {
+  const next = v.next_turn_id;
+  if (
+    !Array.isArray(v.days) ||
+    !Array.isArray(v.rotation) ||
+    !v.rotation.every(isTurn) ||
+    !(next === null || typeof next === 'number')
+  ) {
     throw new Error('Unexpected answer from the API.');
   }
-  return { ...routine, days: v.days.map(expectDay), rotation: v.rotation };
+  return { ...routine, days: v.days.map(expectDay), rotation: v.rotation, next_turn_id: next };
 }
 
 /** A new Day has no Lines and gets one Turn at the end of the rotation. */

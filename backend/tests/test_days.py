@@ -48,7 +48,14 @@ def exercise_names(client: TestClient) -> list[str]:
 
 def test_a_new_routine_has_no_days_and_an_empty_rotation(client: TestClient) -> None:
     ppl = routine(client)
-    assert detail(client, ppl) == {"id": ppl, "name": "PPL", "engaged": True, "days": [], "rotation": []}
+    assert detail(client, ppl) == {
+        "id": ppl,
+        "name": "PPL",
+        "engaged": True,
+        "days": [],
+        "rotation": [],
+        "next_turn_id": None,
+    }
 
 
 def test_an_unknown_routine_has_no_detail(client: TestClient) -> None:

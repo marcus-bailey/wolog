@@ -21,8 +21,17 @@ function fakeApi(exercises: Exercise[] = [], days: Day[] = [], rotation?: Turn[]
     days: structuredClone(days),
     exercises: structuredClone(exercises),
     rotation: rotation ?? days.map((d) => ({ id: d.id + 1000, day_id: d.id })),
+    /** The next Turn; none unless a test sets it. */
+    next: undefined as number | undefined,
   };
-  const detail = () => ({ id: 1, name: 'PPL', engaged: true, days: state.days, rotation: state.rotation });
+  const detail = () => ({
+    id: 1,
+    name: 'PPL',
+    engaged: true,
+    days: state.days,
+    rotation: state.rotation,
+    next_turn_id: state.next ?? null,
+  });
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
     const path = url.replace('/wolog/api/', '');
     const method = init?.method ?? 'GET';
@@ -404,4 +413,12 @@ it('reloads the Routine when the rotation changed elsewhere', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Move Turn 2, Pull up' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('The rotation changed since you loaded it.');
   await screen.findByRole('button', { name: 'Remove Turn 3, Push' });
+});
+
+it('marks the next Turn', async () => {
+  const { state } = fakeApi([], [push, pull, legs]);
+  state.next = 1011;
+  renderDetail();
+  await screen.findByRole('list', { name: 'Rotation' });
+  expect(rotationNames()).toEqual(['1 Push', '2 Pull · next', '3 Legs']);
 });

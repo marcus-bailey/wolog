@@ -19,7 +19,7 @@ import {
 } from './api';
 
 /**
- * Routine detail (spec §5): the rotation as numbered Turns, then the Days, each expandable to edit
+ * Routine detail (spec §5): the rotation as numbered Turns with the next one marked, then the Days, each expandable to edit
  * its Lines and to Drop it from or Put it back on the rotation, and Create Day at the bottom. Lines
  * are added by typing an Exercise's name; the picker offers live Exercises only.
  */
@@ -205,7 +205,10 @@ function RotationEditor({ detail, onChanged, onStale }: RotationProps) {
             return (
               <li key={turn.id} className="line">
                 <span className="position">{i + 1}</span>
-                <span className="name">{dayName.get(turn.day_id)}</span>
+                <span className="name">
+                  {dayName.get(turn.day_id)}
+                  {turn.id === detail.next_turn_id && <span className="next"> · next</span>}
+                </span>
                 <button
                   type="button"
                   className="icon"
