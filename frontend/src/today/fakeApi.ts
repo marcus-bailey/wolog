@@ -166,6 +166,16 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
     if (path.startsWith('exercises')) {
       return json(200, [...exerciseIds.keys()].map(exercise).filter((e) => !e.retired));
     }
+    if (path === 'history') {
+      const named = (r: FakeRoutine, i: number) => ({ id: turnId(r, i), name: r.turns[i]! });
+      const rows = [
+        ...sessions.map((x) => ({ kind: 'session', rank: 0, id: x.id, date: x.date, routine: x.routine, day: x.day })),
+        ...routines.flatMap((r) =>
+          r.skips.map((k) => ({ kind: 'skip', rank: 1, id: k.id, date: k.date, routine: { id: r.id, name: r.name }, day: named(r, k.turn) })),
+        ),
+      ].sort((a, b) => b.date.localeCompare(a.date) || a.rank - b.rank || b.id - a.id);
+      return json(200, rows.map(({ kind, id, date, routine, day }) => ({ kind, id, date, routine, day })));
+    }
     if (path.startsWith('last-time?')) return json(200, lastTime(new URLSearchParams(path.slice('last-time?'.length))));
     const on = /^sessions\/on\/(.+)$/.exec(path);
     if (on) return json(200, sessions.find((s) => s.date === on[1]) ?? null);
