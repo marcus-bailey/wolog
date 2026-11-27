@@ -62,8 +62,12 @@ function expectUpNext(v: unknown): UpNext {
   throw new Error('Unexpected answer from the API.');
 }
 
-export async function getUpNext(): Promise<UpNext> {
-  return expectUpNext(await request('GET', 'up-next'));
+/**
+ * The Engaged Routine, its suggestion and last Skip. With `on`, the suggestion is the pre-selection
+ * for a new Session on that date: as of it, for a backfill before the Routine's latest Session.
+ */
+export async function getUpNext(on?: string): Promise<UpNext> {
+  return expectUpNext(await request('GET', on === undefined ? 'up-next' : `up-next?on=${on}`));
 }
 
 /**

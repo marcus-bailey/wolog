@@ -37,7 +37,7 @@ from wolog.exercises import Exercise, ExerciseOut
 from wolog.pins import SessionRecord, Skip, first_turn_of
 from wolog.refusals import Refusal, documented
 from wolog.routines import Routine
-from wolog.today import check_today, engaged_as_seen, shown, suggestion
+from wolog.today import check_today, engaged_as_seen, last_skip, latest_session_date, shown, suggestion
 
 
 class SessionLine(Base):
@@ -282,6 +282,28 @@ def _changed() -> Refusal:
     )
 
 
+def _check_skip_gap(db: Session, routine: Routine, date: dt.date) -> None:
+    """A new Session must be dated before this Routine's latest Session (a backfill), or on or after
+    its latest Skip (or latest Session when it has no Skips). Between them is the Skip gap (spec
+    §4.4): a Session there would land among Skips that already passed the Turns after it."""
+    latest_session = latest_session_date(db, routine)
+    skipped = last_skip(db, routine)
+    if skipped is None or date >= skipped.date or (latest_session is not None and date < latest_session):
+        return
+    if latest_session is None:
+        allowed = f"on or after {shown(skipped.date)}, the date of its last Skip"
+    else:
+        allowed = (
+            f"before {shown(latest_session)}, the date of its latest Session, or on or after "
+            f"{shown(skipped.date)}, the date of its last Skip"
+        )
+    raise Refusal(
+        status.HTTP_409_CONFLICT,
+        "date_in_skip_gap",
+        f"{shown(date)} falls among the Skips of “{routine.name}”. A new Session on it must be dated {allowed}.",
+    )
+
+
 def _change_day(db: Session, record: SessionRecord, day_id: int) -> None:
     """Relabel the Session to another Day of its Routine (spec §4.5 Change-Day): no new Snapshot.
     It re-pins to the new Day's first Turn at or after the old Turn's position, wrapping; with no
@@ -329,7 +351,9 @@ def create_session(body: SessionCreate, db: DbSession) -> SessionOut:
             "session_exists",
             f"There is already a Session on {shown(body.date)}. It is open now; save your Set there.",
         )
-    suggested = suggestion(db, routine)  # before the replacement of this date's Skips
+    _check_skip_gap(db, routine, body.date)
+    # As of the date (a backfill's pre-selection), and before the replacement of this date's Skips.
+    suggested = suggestion(db, routine, body.date)
     if suggested is None:
         raise Refusal(
             status.HTTP_409_CONFLICT,

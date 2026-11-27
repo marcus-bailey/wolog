@@ -89,10 +89,15 @@ def _pins(routine_id: int) -> Select[int | None, dt.date, int]:
     return union_all(skips, sessions)  # type: ignore[return-value]
 
 
-def cursor(db: Session, routine_id: int) -> int | None:
-    """The Turn of the latest pin that still holds one, or None."""
+def cursor(db: Session, routine_id: int, on: dt.date | None = None) -> int | None:
+    """The Turn of the latest pin that still holds one, or None.
+
+    With `on`, the cursor as of that date (§4.4 Backfill): only pins dated on or before it count.
+    That is the latest Session strictly before it (a new Session's date holds none of this Routine),
+    then this Routine's Skips after that Session and on or before the date."""
     pins = _pins(routine_id).subquery()
-    return db.scalar(select(pins.c.turn_id).order_by(pins.c.date.desc(), pins.c.seq.desc()).limit(1))
+    query = select(pins.c.turn_id).order_by(pins.c.date.desc(), pins.c.seq.desc()).limit(1)
+    return db.scalar(query if on is None else query.where(pins.c.date <= on))
 
 
 def next_index(turn_ids: list[int], at: int | None) -> int:

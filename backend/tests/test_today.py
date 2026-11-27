@@ -471,7 +471,7 @@ def test_the_schema_lists_only_the_refusals_each_route_can_give(client: TestClie
         if op["tags"] == ["today"]
     }
     assert codes == {
-        ("get", "/api/up-next"): [],
+        ("get", "/api/up-next"): ["422"],
         ("post", "/api/skips"): ["409", "422"],
         ("delete", "/api/skips/{skip_id}"): ["404", "409", "422"],
     }

@@ -100,7 +100,7 @@ export function Today({ on: opened }: { on?: string } = {}) {
         const reopened = session
           ? ({ kind: 'session', session } as const)
           : open?.kind === 'draft'
-            ? await draftOn(next, on)
+            ? await draftOn(on === today ? next : await getUpNext(on), on)
             : null;
         if (!current) return;
         if (opened !== undefined && !session) {
@@ -153,16 +153,33 @@ export function Today({ on: opened }: { on?: string } = {}) {
     }
   }
 
-  /** The logger's date changed: a date that has a Session opens it; otherwise the draft moves there. */
+  /**
+   * The logger's date changed: a date that has a Session opens it; otherwise the draft moves there,
+   * on the suggestion as of that date (a backfill's pre-selection, spec §4.4). A picked Day stays.
+   */
   async function onDate(on: string) {
     if (logging?.kind !== 'draft') return;
+    const draft = logging;
+    const kept = draft.day.id === draft.suggestion.day_id ? null : { id: draft.day.id, name: draft.day.name };
     setError(null);
-    setLogging({ ...logging, date: on });
+    setLogging({ ...draft, date: on });
+    // No save until the draft is on the suggestion as of its new date.
+    setBusy(true);
     try {
-      const session = await getSessionOn(on);
-      if (session) setLogging({ kind: 'session', session });
+      const [session, next] = await Promise.all([getSessionOn(on), getUpNext(on)]);
+      const moved = session ? ({ kind: 'session', session } as const) : await draftOn(next, on, kept);
+      // Unless the date changed again meanwhile.
+      setLogging((now) => {
+        if (now?.kind !== 'draft' || now.date !== on || !moved) return now;
+        if (moved.kind === 'session') return moved;
+        // The same Day keeps the screen's Lines; another Day keeps the Lines added by name.
+        const typed = now.lines.filter((l) => 'name' in l);
+        return { ...moved, lines: moved.day.id === draft.day.id ? now.lines : [...moved.lines, ...typed] };
+      });
     } catch (e) {
       setError(messageOf(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -310,7 +327,7 @@ export function Today({ on: opened }: { on?: string } = {}) {
         await reloadRoutines();
         const next = await getUpNext();
         showUpNext(next);
-        setLogging(await draftOn(next, on));
+        setLogging(await draftOn(on === today ? next : await getUpNext(on), on));
       }
     } catch (e) {
       setError(messageOf(e));
