@@ -161,3 +161,36 @@ export async function dropDay(dayId: number): Promise<RoutineDetail> {
 export async function putBackDay(dayId: number): Promise<RoutineDetail> {
   return expectDetail(await request('POST', `days/${dayId}/put-back`));
 }
+
+/**
+ * A new Routine under a new unique name, copying every Day with its Lines and the Turns in order.
+ * No Sessions or Skips; not engaged; no link back.
+ */
+export async function duplicateRoutine(id: number, name: string): Promise<RoutineDetail> {
+  return expectDetail(await request('POST', `routines/${id}/duplicate`, { name }));
+}
+
+/**
+ * Refused with `routine_pinned` while any Session or Skip points at it or its Days, and with
+ * `routine_engaged` for the Engaged Routine while another Routine exists. Destroying the only
+ * Routine returns the app to first run.
+ */
+export async function destroyRoutine(id: number): Promise<void> {
+  await request('DELETE', `routines/${id}`);
+}
+
+/**
+ * Copies the Day into this Routine or another, under a name unique there, with one Turn at the end
+ * of that rotation. Answers with the target Routine.
+ */
+export async function duplicateDay(dayId: number, routineId: number, name: string): Promise<RoutineDetail> {
+  return expectDetail(await request('POST', `days/${dayId}/duplicate`, { routine_id: routineId, name }));
+}
+
+/**
+ * Destroys the Day with its Turns and Lines; its Exercises stay. Refused with `day_pinned` while a
+ * Session or Skip points at it (Drop it instead). Answers with its Routine.
+ */
+export async function destroyDay(dayId: number): Promise<RoutineDetail> {
+  return expectDetail(await request('DELETE', `days/${dayId}`));
+}
