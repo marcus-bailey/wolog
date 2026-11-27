@@ -68,21 +68,24 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
   };
   const dayLines = (r: FakeRoutine, i: number) => linesOf(turnId(r, i));
 
-  function cursor(r: FakeRoutine): number | undefined {
+  /** The cursor; with `on`, as of that date (only pins dated on or before it). */
+  function cursor(r: FakeRoutine, on?: string): number | undefined {
     const pins = [
       ...r.skips.map((s) => ({ date: s.date, seq: s.id, turn: s.turn })),
       ...sessions
         .filter((s) => s.routine.id === r.id && s.turn_id !== null)
         .map((s) => ({ date: s.date, seq: s.id, turn: s.turn_id! % 100 })),
-    ].sort((a, b) => a.date.localeCompare(b.date) || a.seq - b.seq);
+    ]
+      .filter((p) => on === undefined || p.date <= on)
+      .sort((a, b) => a.date.localeCompare(b.date) || a.seq - b.seq);
     return pins.at(-1)?.turn;
   }
 
-  function upNext() {
+  function upNext(on?: string) {
     const r = routines.find((x) => x.engaged);
     if (!r) return { routine: null, suggestion: null, last_skip: null };
     const last = r.skips.at(-1);
-    const at = cursor(r);
+    const at = cursor(r, on);
     const index = r.turns.length === 0 ? -1 : at !== undefined ? (at + 1) % r.turns.length : 0;
     return {
       routine: { id: r.id, name: r.name, engaged: true },
@@ -140,6 +143,7 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
     const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
     if (path === 'routines') return json(200, routines.map(({ id, name, engaged }) => ({ id, name, engaged })));
     if (path === 'up-next') return json(200, upNext());
+    if (path.startsWith('up-next?on=')) return json(200, upNext(path.slice('up-next?on='.length)));
     const engage = /^routines\/(\d+)\/engage$/.exec(path);
     if (engage) {
       for (const r of routines) r.engaged = r.id === Number(engage[1]);
@@ -187,7 +191,14 @@ export function fakeTodayApi(routines: FakeRoutine[], sessions: FakeSession[] = 
       if (sessions.some((s) => s.date === body.date)) {
         return json(409, { code: 'session_exists', message: 'There is already a Session on that date. It is open now; save your Set there.' });
       }
-      const now = upNext();
+      const date = body.date as string;
+      const latestSession = sessions.filter((s) => s.routine.id === r.id).map((s) => s.date).sort().at(-1);
+      const lastSkip = r.skips.map((s) => s.date).sort().at(-1);
+      if (lastSkip && date < lastSkip && !(latestSession && date < latestSession)) {
+        const allowed = latestSession ? `before ${latestSession}, the date of its latest Session, or on or after ${lastSkip}` : `on or after ${lastSkip}`;
+        return json(409, { code: 'date_in_skip_gap', message: `${date} falls among the Skips of “${r.name}”. A new Session on it must be dated ${allowed}, the date of its last Skip.` });
+      }
+      const now = upNext(date);
       if (body.turn_id !== now.suggestion?.turn_id) {
         return json(409, { code: 'suggestion_changed', message: `Up next is now ${now.suggestion?.day_name}. Check it and try again.` });
       }

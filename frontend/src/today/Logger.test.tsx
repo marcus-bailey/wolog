@@ -817,3 +817,85 @@ it('after Remove Line, the Line taking its place shows its own prefill', async (
   expect(logger.getByLabelText('Weight (lb)')).toHaveValue('25');
   expect(logger.getByLabelText('Reps')).toHaveValue('8');
 });
+
+// Backfill and the Skip gap (spec §4.4; TDY-4)
+
+const pushOn = (date: string) => ({
+  id: seq++,
+  date,
+  routine: { id: 1, name: 'PPL' },
+  day: { id: 100, name: 'Push' },
+  turn_id: 100,
+  version: 1,
+  lines: [line('Bench Press', [set('135', 5)])],
+});
+
+it('a past date before the latest Session pre-selects as of that date, and saving it leaves Up next', async () => {
+  const { sessions } = fakeTodayApi([{ ...ppl(), turns: ['Push', 'Pull', 'Legs'], lines: { ...ppl().lines, Legs: ['Squat'] } }], [pushOn(daysAgo(3))]);
+  renderToday();
+  expect(await screen.findByText('Pull', { selector: '.suggested-day' })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Start Pull' }));
+  const opened = within(await screen.findByRole('region', { name: 'Logger' }));
+
+  // The logger is a new screen for the new date.
+  fireEvent.change(opened.getByLabelText('Date'), { target: { value: daysAgo(5) } });
+  await waitFor(() => expect(screen.getByLabelText('Date')).toHaveValue(daysAgo(5)));
+  const logger = within(screen.getByRole('region', { name: 'Logger' }));
+  // Nothing before that date: the first Turn.
+  expect(await logger.findByRole('heading', { name: 'Push' })).toBeInTheDocument();
+  await fill(logger, '100', '5');
+  await userEvent.click(logger.getByRole('button', { name: 'Save Set 1' }));
+  await logger.findByRole('button', { name: 'Save Set 2' });
+  expect(sessions.find((s) => s.date === daysAgo(5))?.day.name).toBe('Push');
+
+  await userEvent.click(logger.getByRole('button', { name: 'Back to today' }));
+  expect(await screen.findByText('Pull', { selector: '.suggested-day' })).toBeInTheDocument();
+});
+
+it('a picked Day stays picked when the date changes', async () => {
+  fakeTodayApi([{ ...ppl(), turns: ['Push', 'Pull', 'Legs'], lines: { ...ppl().lines, Legs: ['Squat'] } }], [pushOn(daysAgo(3))]);
+  renderToday();
+  await userEvent.click(await screen.findByRole('button', { name: 'Pick another Day' }));
+  await userEvent.click(within(screen.getByRole('group', { name: 'Days on the rotation' })).getByRole('button', { name: 'Legs' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Start Legs' }));
+  const opened = within(await screen.findByRole('region', { name: 'Logger' }));
+
+  // The logger is a new screen for the new date.
+  fireEvent.change(opened.getByLabelText('Date'), { target: { value: daysAgo(5) } });
+  await waitFor(() => expect(screen.getByLabelText('Date')).toHaveValue(daysAgo(5)));
+  const logger = within(screen.getByRole('region', { name: 'Logger' }));
+  expect(await logger.findByText('Suggested: Push')).toBeInTheDocument();
+  expect(logger.getByRole('heading', { name: 'Legs' })).toBeInTheDocument();
+});
+
+it('a new Session in the Skip gap is refused, saying why, and keeps the inputs', async () => {
+  const { sessions } = fakeTodayApi([{ ...ppl(), skips: [{ id: 1, date: daysAgo(2), turn: 0 }] }]);
+  renderToday();
+  await userEvent.click(await screen.findByRole('button', { name: 'Start Pull' }));
+  const opened = within(await screen.findByRole('region', { name: 'Logger' }));
+  fireEvent.change(opened.getByLabelText('Date'), { target: { value: daysAgo(4) } });
+  await waitFor(() => expect(screen.getByLabelText('Date')).toHaveValue(daysAgo(4)));
+  const logger = within(screen.getByRole('region', { name: 'Logger' }));
+  expect(await logger.findByRole('heading', { name: 'Push' })).toBeInTheDocument();
+
+  await fill(logger, '100', '5');
+  await userEvent.click(logger.getByRole('button', { name: 'Save Set 1' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('falls among the Skips of “PPL”');
+  expect(sessions).toEqual([]);
+  expect(logger.getByLabelText('Weight (lb)')).toHaveValue('100');
+});
+
+it('Lines added by name stay when a new date brings another Day', async () => {
+  fakeTodayApi([{ ...ppl(), turns: ['Push', 'Pull', 'Legs'], lines: { ...ppl().lines, Legs: ['Squat'] } }], [pushOn(daysAgo(3))]);
+  renderToday();
+  await userEvent.click(await screen.findByRole('button', { name: 'Start Pull' }));
+  const opened = within(await screen.findByRole('region', { name: 'Logger' }));
+  await userEvent.click(opened.getByRole('button', { name: '+ Line' }));
+  await userEvent.type(opened.getByLabelText('Exercise'), 'Curls');
+  await userEvent.click(opened.getByRole('button', { name: 'Add' }));
+
+  fireEvent.change(opened.getByLabelText('Date'), { target: { value: daysAgo(5) } });
+  await waitFor(() => expect(screen.getByRole('heading', { name: 'Push' })).toBeInTheDocument());
+  const strip = within(screen.getByRole('navigation', { name: 'Lines' }));
+  expect(strip.getAllByRole('button').map((b) => b.textContent)).toEqual(['Bench Press 0', 'Dips 0', 'Curls 0', '+ Line']);
+});
