@@ -72,7 +72,7 @@ function isLine(value: unknown): value is Line {
   return typeof v.id === 'number' && isExercise(v.exercise);
 }
 
-function expectDay(value: unknown): Day {
+export function expectDay(value: unknown): Day {
   if (typeof value === 'object' && value !== null) {
     const v = value as Record<string, unknown>;
     if (typeof v.id === 'number' && typeof v.name === 'string' && Array.isArray(v.lines) && v.lines.every(isLine)) {
@@ -86,6 +86,11 @@ function isTurn(value: unknown): value is Turn {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
   return typeof v.id === 'number' && typeof v.day_id === 'number';
+}
+
+/** The Day with its Lines in order. */
+export async function getDay(id: number): Promise<Day> {
+  return expectDay(await request('GET', `days/${id}`));
 }
 
 export async function getRoutine(id: number): Promise<RoutineDetail> {

@@ -4,73 +4,9 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { AppRoutes } from '../App';
 import { localToday } from '../dates';
+import { fakeTodayApi as fakeApi, type FakeRoutine } from './fakeApi';
 
 afterEach(() => vi.unstubAllGlobals());
-
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-}
-
-interface FakeRoutine {
-  id: number;
-  name: string;
-  engaged: boolean;
-  /** The rotation as Day names; Turn ids are 100 × Routine id + index. */
-  turns: string[];
-  skips: { id: number; date: string; turn: number }[];
-}
-
-/**
- * The API's Routine list, engage, Up next, Skip and Undo, in memory. The suggestion follows the
- * API's rule: the Turn after the last Skip's, wrapping; else the first.
- */
-function fakeApi(routines: FakeRoutine[]) {
-  let nextSkip = 1;
-  const turnId = (r: FakeRoutine, i: number) => r.id * 100 + i;
-  function upNext() {
-    const r = routines.find((x) => x.engaged);
-    if (!r) return { routine: null, suggestion: null, last_skip: null };
-    const last = r.skips.at(-1);
-    const index = r.turns.length === 0 ? -1 : last ? (last.turn + 1) % r.turns.length : 0;
-    return {
-      routine: { id: r.id, name: r.name, engaged: true },
-      suggestion:
-        index < 0
-          ? null
-          : { turn_id: turnId(r, index), day_id: index, day_name: r.turns[index], position: index + 1, of: r.turns.length },
-      last_skip: last ? { id: last.id, date: last.date, day_id: last.turn, day_name: r.turns[last.turn] } : null,
-    };
-  }
-  const fetch = vi.fn(async (url: string, init?: RequestInit) => {
-    const path = url.replace('/wolog/api/', '');
-    const method = init?.method ?? 'GET';
-    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
-    if (path === 'routines') return json(200, routines.map(({ id, name, engaged }) => ({ id, name, engaged })));
-    if (path === 'up-next') return json(200, upNext());
-    const engage = /^routines\/(\d+)\/engage$/.exec(path);
-    if (engage) {
-      for (const r of routines) r.engaged = r.id === Number(engage[1]);
-      const r = routines.find((x) => x.engaged)!;
-      return json(200, { id: r.id, name: r.name, engaged: true });
-    }
-    const r = routines.find((x) => x.engaged)!;
-    if (method === 'POST' && path === 'skips') {
-      const now = upNext();
-      if (body.turn_id !== now.suggestion?.turn_id) {
-        return json(409, { code: 'suggestion_changed', message: `Up next is now ${now.suggestion?.day_name}. Check it and try again.` });
-      }
-      r.skips.push({ id: nextSkip++, date: body.date as string, turn: (body.turn_id as number) % 100 });
-      return json(201, upNext());
-    }
-    if (method === 'DELETE' && path.startsWith('skips/')) {
-      r.skips.pop();
-      return json(200, upNext());
-    }
-    return json(405, {});
-  });
-  vi.stubGlobal('fetch', fetch);
-  return { fetch, routines };
-}
 
 function renderToday() {
   render(

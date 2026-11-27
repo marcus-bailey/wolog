@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from wolog.days import Day, Turn
 from wolog.db import MAX_ID, get_session
-from wolog.pins import Skip, cursor, next_index
+from wolog.pins import SessionRecord, Skip, cursor, next_index
 from wolog.refusals import Refusal, documented
 from wolog.routines import Routine, RoutineOut
 
@@ -82,6 +82,15 @@ def _last_skip(db: Session, routine: Routine) -> Skip | None:
     )
 
 
+def latest_session_date(db: Session, routine: Routine) -> dt.date | None:
+    return db.scalar(
+        select(SessionRecord.date)
+        .where(SessionRecord.routine_id == routine.id)
+        .order_by(SessionRecord.date.desc())
+        .limit(1)
+    )
+
+
 def _engaged(db: Session, *, lock: bool = False) -> Routine | None:
     """The Engaged Routine. Locked, it can't be switched away from, nor its rotation changed, until commit."""
     query = select(Routine).where(Routine.engaged)
@@ -104,21 +113,21 @@ def _up_next(db: Session, routine: Routine | None) -> UpNext:
     )
 
 
-def _check_today(today: dt.date) -> None:
+def check_today(today: dt.date) -> None:
     server = dt.datetime.now(dt.UTC).date()
     if abs((today - server).days) > 1:
         raise Refusal(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "today_implausible",
-            f"Your device says today is {_shown(today)}, which can’t be right. Check its date and try again.",
+            f"Your device says today is {shown(today)}, which can’t be right. Check its date and try again.",
         )
 
 
-def _shown(date: dt.date) -> str:
+def shown(date: dt.date) -> str:
     return f"{date.day} {date:%b %Y}"
 
 
-def _engaged_as_seen(db: Session, routine_id: int) -> Routine:
+def engaged_as_seen(db: Session, routine_id: int) -> Routine:
     """The Engaged Routine, locked, refused if it isn't the one the owner was looking at."""
     routine = _engaged(db, lock=True)
     if routine is None:
@@ -142,8 +151,8 @@ def up_next(db: DbSession) -> UpNext:
 def skip(body: SkipIn, db: DbSession) -> UpNext:
     """Pass the suggested Turn of the Engaged Routine on a date. Several Skips may share a date. The
     date may not be in the future, and must be on or after this Routine's latest Skip date."""
-    _check_today(body.today)
-    routine = _engaged_as_seen(db, body.routine_id)
+    check_today(body.today)
+    routine = engaged_as_seen(db, body.routine_id)
     suggested = suggestion(db, routine)
     if suggested is None:
         raise Refusal(
@@ -164,7 +173,21 @@ def skip(body: SkipIn, db: DbSession) -> UpNext:
         raise Refusal(
             status.HTTP_409_CONFLICT,
             "date_before_last_skip",
-            f"A Skip must be dated on or after {_shown(last.date)}, the date of this Routine’s last Skip.",
+            f"A Skip must be dated on or after {shown(last.date)}, the date of this Routine’s last Skip.",
+        )
+    latest_session = latest_session_date(db, routine)
+    if latest_session is not None and body.date == latest_session:
+        raise Refusal(
+            status.HTTP_409_CONFLICT,
+            "date_has_session",
+            f"{shown(body.date)} holds a Session of this Routine, so it can’t also hold a Skip.",
+        )
+    if latest_session is not None and body.date < latest_session:
+        # Skips pass the live suggestion, so one dated before the latest Session would pass nothing.
+        raise Refusal(
+            status.HTTP_409_CONFLICT,
+            "date_before_last_session",
+            f"A Skip must be dated after {shown(latest_session)}, the date of this Routine’s latest Session.",
         )
     db.add(Skip(date=body.date, routine_id=routine.id, day_id=suggested.day_id, turn_id=suggested.turn_id))
     db.flush()
