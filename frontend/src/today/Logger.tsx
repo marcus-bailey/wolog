@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { messageOf } from '../api';
-import { shownDate } from '../dates';
+import { ago, shownDate } from '../dates';
 import { listExercises, type Exercise } from '../exercises/api';
 import { getRoutine, type Day } from '../routines/api';
-import type { SavedSet, Session, SetValues } from '../sessions/api';
+import { getLastTime, type LastTime, type SavedSet, type Session, type SetValues } from '../sessions/api';
 import type { Suggestion } from './api';
 
 /** A Line on the screen before the first Set: a copy of one of the Day's Lines, or one typed by name. */
@@ -46,6 +46,8 @@ export interface LoggerActions {
 interface ScreenLine {
   key: string;
   name: string;
+  /** Its Exercise, by id; or by the name typed, for a Line added before the first Set. */
+  exercise: { id: number } | { name: string };
   sets: SavedSet[];
 }
 
@@ -53,8 +55,102 @@ const normalised = (name: string) => name.trim().replace(/\s+/g, ' ');
 
 function screenLines(logging: Logging): ScreenLine[] {
   return logging.kind === 'draft'
-    ? logging.lines.map((l) => ({ key: l.key, name: 'name' in l ? normalised(l.name) : l.exercise.name, sets: [] }))
-    : logging.session.lines.map((l) => ({ key: `s${l.id}`, name: l.exercise.name, sets: l.sets }));
+    ? logging.lines.map((l) =>
+        'name' in l
+          ? { key: l.key, name: normalised(l.name), exercise: { name: normalised(l.name) }, sets: [] }
+          : { key: l.key, name: l.exercise.name, exercise: { id: l.exercise.id }, sets: [] },
+      )
+    : logging.session.lines.map((l) => ({
+        key: `s${l.id}`,
+        name: l.exercise.name,
+        exercise: { id: l.exercise.id },
+        sets: l.sets,
+      }));
+}
+
+/**
+ * Lines of one Exercise share Last-time: this names it, as `id:7` or `name:Back Squat` (the name as
+ * typed, normalised; the API matches it case-insensitively).
+ */
+function exerciseKey(line: ScreenLine): string {
+  return 'id' in line.exercise ? `id:${line.exercise.id}` : `name:${line.exercise.name}`;
+}
+
+/** The Exercise an `exerciseKey` names, as Last-time is asked for it. */
+function exerciseOfKey(key: string): { id: number } | { name: string } {
+  return key.startsWith('id:') ? { id: Number(key.slice(3)) } : { name: key.slice(5) };
+}
+
+/**
+ * Prefill of a new Set (spec §4.8): Weight and Reps of the Line's previous Set; else of Last-time's
+ * first Working Set (or first Set); else empty. The mark and Note are never prefilled.
+ */
+function prefillOf(line: ScreenLine | undefined, last: LastTime | undefined): { weight: string; reps: string } {
+  const previous = line?.sets.at(-1);
+  if (previous) return { weight: previous.weight, reps: String(previous.reps) };
+  if (last?.prefill) return { weight: last.prefill.weight, reps: String(last.prefill.reps) };
+  return { weight: '', reps: '' };
+}
+
+/**
+ * The Last-time card (spec §5): the date and how long before this Session it was, then every Set of
+ * the Exercise grouped by Line, Warmups marked. Notes are a dot per Set and a count in the header;
+ * tapping the card shows them all under their Sets, and tapping again hides them, so collapsed it
+ * stays the same size however many Notes there are. Routine and Day are not shown.
+ */
+function LastTimeCard({ last, failed, on, today }: { last: LastTime | undefined; failed: boolean; on: string; today: string }) {
+  const [open, setOpen] = useState(false);
+  const session = last?.last_time;
+  const notes = session ? session.lines.flatMap((l) => l.sets).filter((s) => s.note).length : 0;
+
+  return (
+    // The Notes toggle is the header's button; a tap anywhere else on the card does the same.
+    <section
+      className={notes > 0 ? 'last-time has-notes' : 'last-time'}
+      aria-label="Last time"
+      onClick={() => notes > 0 && setOpen(!open)}
+    >
+      <header className="last-time-head">
+        <span className="eyebrow">Last time</span>
+        {session && (
+          <>
+            <span>{shownDate(session.date, today)}</span>
+            <span className="quiet">{ago(session.date, on)}</span>
+          </>
+        )}
+        {notes > 0 && (
+          <button type="button" className="notes-toggle" aria-expanded={open}>
+            · {notes} {notes === 1 ? 'Note' : 'Notes'}
+          </button>
+        )}
+      </header>
+      {failed ? (
+        <p className="quiet">Last time couldn’t be loaded.</p>
+      ) : !last ? (
+        <p className="quiet">Loading…</p>
+      ) : !session ? (
+        <p className="quiet">No earlier Sets</p>
+      ) : (
+        session.lines.map((l, i) => (
+          <ol key={i} className="chips last-sets" aria-label={`Line ${i + 1}`}>
+            {l.sets.map((s) => (
+              <li key={s.id} className={s.warmup ? 'chip set warmup' : 'chip set'}>
+                {s.weight} × {s.reps}
+                {s.warmup && <span className="visually-hidden"> Warmup</span>}
+                {s.note && (
+                  <span className="note-dot">
+                    <span aria-hidden="true">•</span>
+                    <span className="visually-hidden"> Note</span>
+                  </span>
+                )}
+                {open && s.note && <span className="last-note">{s.note}</span>}
+              </li>
+            ))}
+          </ol>
+        ))
+      )}
+    </section>
+  );
 }
 
 /** Step a typed number, never below `min`. Empty or unreadable counts as 0. */
@@ -315,8 +411,9 @@ function AddLine({ busy, onAdd, onCancel }: { busy: boolean; onAdd: (name: strin
  * values, a Warmup toggle, a Note and a large Save Set N; Previous and Next Line, and Remove Line
  * while the Line has no Sets. Delete Session once there is one.
  *
- * After a save Weight and Reps stay as they were, the mark resets to Working and the Note to blank;
- * moving to another Line clears the inputs.
+ * Above the inputs, the Last-time card of the Line's Exercise. Weight and Reps are prefilled per
+ * §4.8 until typed over: after a save that is the Set just saved; on another Line, its own previous
+ * Set or Last-time. The mark resets to Working and the Note to blank.
  */
 export function Logger({
   logging,
@@ -331,8 +428,11 @@ export function Logger({
 }) {
   const lines = screenLines(logging);
   const [current, setCurrent] = useState(0);
-  const [weight, setWeight] = useState('');
-  const [reps, setReps] = useState('');
+  /** Weight and Reps as typed on this Line; null shows the prefill. */
+  const [typedWeight, setWeight] = useState<string | null>(null);
+  const [typedReps, setReps] = useState<string | null>(null);
+  /** Last-time by Exercise (see `exerciseKey`), for this Session's date; null if it failed to load. */
+  const [lastTimes, setLastTimes] = useState<Record<string, LastTime | null>>({});
   const [warmup, setWarmup] = useState(false);
   const [note, setNote] = useState('');
   const [editing, setEditing] = useState<number | null>(null);
@@ -346,20 +446,54 @@ export function Logger({
   const dayName = logging.kind === 'draft' ? logging.day.name : logging.session.day.name;
   const date = logging.kind === 'draft' ? logging.date : logging.session.date;
   const editedSet = line && editing !== null ? line.sets[editing] : undefined;
+  const lastKey = line && exerciseKey(line);
+  const last = lastKey === undefined ? undefined : lastTimes[lastKey];
+  const prefill = prefillOf(line, last ?? undefined);
+  const weight = typedWeight ?? prefill.weight;
+  const reps = typedReps ?? prefill.reps;
+
+  // Last-time of the Line's Exercise, once per Exercise; it is strictly before this Session's date.
+  useEffect(() => {
+    if (lastKey === undefined || lastKey in lastTimes) return;
+    let current = true;
+    getLastTime(date, exerciseOfKey(lastKey)).then(
+      // Under the Exercise's id too, so a typed Line keeps its card once the first Set saves it.
+      (found) =>
+        current &&
+        setLastTimes((all) => ({
+          ...all,
+          [lastKey]: found,
+          ...(found.exercise_id === null ? {} : { [`id:${found.exercise_id}`]: found }),
+        })),
+      () => current && setLastTimes((all) => ({ ...all, [lastKey]: null })),
+    );
+    return () => {
+      current = false;
+    };
+  }, [date, lastKey, lastTimes]);
+
+  function clearInputs() {
+    setWeight(null);
+    setReps(null);
+    setWarmup(false);
+    setNote('');
+    // A Last-time that failed to load is asked again on the next visit.
+    setLastTimes((all) => Object.fromEntries(Object.entries(all).filter(([, v]) => v !== null)));
+  }
 
   function goTo(i: number) {
     setEditing(null);
     if (i === index) return;
     setCurrent(i);
-    setWeight('');
-    setReps('');
-    setWarmup(false);
-    setNote('');
+    clearInputs();
   }
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     if (await actions.saveSet(index, values(weight, reps, warmup, note))) {
+      // The prefill is now the Set just saved.
+      setWeight(null);
+      setReps(null);
       setWarmup(false);
       setNote('');
     }
@@ -442,6 +576,8 @@ export function Logger({
         <>
           <h3 className="exercise-name">{line.name}</h3>
 
+          <LastTimeCard key={lastKey} last={last ?? undefined} failed={last === null} on={date} today={today} />
+
           {line.sets.length > 0 && (
             <ol className="chips sets" aria-label="Today’s Sets">
               {line.sets.map((s, i) => (
@@ -509,7 +645,13 @@ export function Logger({
                 type="button"
                 className="secondary danger"
                 disabled={busy}
-                onClick={() => void actions.removeLine(index).then((ok) => ok && setEditing(null))}
+                onClick={() =>
+                  void actions.removeLine(index).then((ok) => {
+                    if (!ok) return;
+                    setEditing(null);
+                    clearInputs(); // another Line takes this place
+                  })
+                }
               >
                 Remove Line
               </button>

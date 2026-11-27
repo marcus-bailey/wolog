@@ -544,3 +544,47 @@ button.chip.set[aria-expanded='true'] {
 .pick-day {
   flex-wrap: wrap;
 }
+
+/* The Last-time card (spec §5): above the inputs; Notes collapsed to dots until tapped. */
+.last-time {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.last-time.has-notes {
+  cursor: pointer;
+}
+.last-time p {
+  margin: 0;
+}
+.last-time-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.5rem;
+}
+button.notes-toggle {
+  min-height: 0;
+  padding: 0;
+  font-weight: 500;
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+}
+.last-sets {
+  flex-wrap: wrap;
+  margin: 0.5rem 0 0;
+}
+.last-sets li {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.last-note {
+  max-width: 16rem;
+  margin-top: 0.125rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+  white-space: normal;
+}

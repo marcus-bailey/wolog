@@ -16,3 +16,24 @@ export function shownDate(date: string, today: string = localToday()): string {
     ...(sameYear ? {} : { year: 'numeric' }),
   });
 }
+
+/** Whole calendar days from civil date `from` to `to`. */
+function daysBetween(from: string, to: string): number {
+  const utc = (date: string) => {
+    const [y, m, d] = date.split('-').map(Number) as [number, number, number];
+    return Date.UTC(y, m - 1, d);
+  };
+  return Math.round((utc(to) - utc(from)) / 86_400_000);
+}
+
+/** How long before `to` the civil date `date` was, e.g. "yesterday", "3 days ago", "2 weeks ago". */
+export function ago(date: string, to: string): string {
+  const days = daysBetween(date, to);
+  const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+  if (days <= 0) return 'the same day';
+  if (days === 1) return 'yesterday';
+  if (days < 14) return plural(days, 'day');
+  if (days < 60) return plural(Math.floor(days / 7), 'week');
+  if (days < 365) return plural(Math.min(11, Math.floor(days / 30)), 'month');
+  return plural(Math.floor(days / 365), 'year');
+}
