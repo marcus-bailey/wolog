@@ -467,3 +467,126 @@ it('a write refused because the Session changed elsewhere reloads it', async () 
   expect(await screen.findByRole('alert')).toHaveTextContent('This Session changed since you loaded it.');
   await waitFor(() => expect(chips(logger)).toEqual(['135 × 5', '150 × 3']));
 });
+
+// Pick another Day and Change-Day (#22)
+
+const ppl3 = (): FakeRoutine => ({
+  id: 1,
+  name: 'PPL',
+  engaged: true,
+  turns: ['Push', 'Pull', 'Legs'],
+  skips: [],
+  lines: { Push: ['Bench Press'], Pull: ['Rows'], Legs: ['Squat'], Arms: ['Curls'] },
+  offRotation: ['Arms'],
+});
+
+it('Pick another Day lists the Days on the rotation; the card then notes what was suggested', async () => {
+  fakeTodayApi([ppl3()]);
+  renderToday();
+  const card = within(await screen.findByRole('region', { name: /^Up next/ }));
+
+  await userEvent.click(card.getByRole('button', { name: 'Pick another Day' }));
+  const picker = within(card.getByRole('group', { name: 'Days on the rotation' }));
+  expect(picker.getAllByRole('button').map((b) => b.textContent)).toEqual(['Push', 'Pull', 'Legs']);
+  await userEvent.click(picker.getByRole('button', { name: 'Legs' }));
+
+  expect(card.getByText('Legs')).toHaveClass('suggested-day');
+  expect(card.getByText('Suggested: Push')).toBeInTheDocument();
+  expect(card.queryByRole('button', { name: 'Skip it' })).not.toBeInTheDocument();
+  await userEvent.click(card.getByRole('button', { name: 'Back to Push' }));
+  expect(card.getByText('Push')).toHaveClass('suggested-day');
+  expect(card.queryByText(/^Suggested:/)).not.toBeInTheDocument();
+});
+
+it('starting a picked Day opens its Lines, and the first Set pins it over the suggestion', async () => {
+  const { fetch, sessions } = fakeTodayApi([ppl3()]);
+  renderToday();
+  const card = within(await screen.findByRole('region', { name: /^Up next/ }));
+  await userEvent.click(card.getByRole('button', { name: 'Pick another Day' }));
+  await userEvent.click(within(card.getByRole('group', { name: 'Days on the rotation' })).getByRole('button', { name: 'Legs' }));
+  await userEvent.click(card.getByRole('button', { name: 'Start Legs' }));
+
+  const logger = within(await screen.findByRole('region', { name: 'Logger' }));
+  expect(logger.getByRole('heading', { name: 'Legs' })).toBeInTheDocument();
+  expect(logger.getByText('Suggested: Push')).toBeInTheDocument();
+  expect(logger.getByRole('heading', { name: 'Squat' })).toBeInTheDocument();
+
+  await fill(logger, '225', '5');
+  await userEvent.click(logger.getByRole('button', { name: 'Save Set 1' }));
+  await logger.findByRole('button', { name: 'Save Set 2' });
+  const body = JSON.parse(writes(fetch)[0]![1]!.body as string) as Record<string, unknown>;
+  expect(body).toMatchObject({ turn_id: 100, day_id: 102, day_lines: [1020] });
+  expect(sessions[0]!.day.name).toBe('Legs');
+});
+
+it('Change Day offers every Day of the Session’s Routine and relabels it, keeping Lines and Sets', async () => {
+  const fake = fakeTodayApi([ppl3()]);
+  const logger = await loggedPush(fake, ['135', '5']);
+
+  await userEvent.click(logger.getByRole('button', { name: 'Change Day…' }));
+  const select = logger.getByLabelText('Day');
+  expect([...(select as HTMLSelectElement).options].map((o) => o.text)).toEqual(['Push', 'Pull', 'Legs', 'Arms']);
+  expect(select).toHaveValue('100');
+  await userEvent.selectOptions(select, 'Arms');
+  await userEvent.click(logger.getByRole('button', { name: 'Change' }));
+
+  expect(await logger.findByRole('heading', { name: 'Arms' })).toBeInTheDocument();
+  expect(logger.getByRole('heading', { name: 'Bench Press' })).toBeInTheDocument();
+  expect(chips(logger)).toEqual(['135 × 5']);
+  const { body } = lastWrite(fake.fetch);
+  expect(body).toMatchObject({ version: 1, day_id: 150 });
+  expect(body.lines[0]!.sets).toHaveLength(1);
+  expect(fake.sessions[0]!.turn_id).toBeNull();
+});
+
+async function pickAndStart(day: string) {
+  renderToday();
+  const card = within(await screen.findByRole('region', { name: /^Up next/ }));
+  await userEvent.click(card.getByRole('button', { name: 'Pick another Day' }));
+  await userEvent.click(within(card.getByRole('group', { name: 'Days on the rotation' })).getByRole('button', { name: day }));
+  await userEvent.click(card.getByRole('button', { name: `Start ${day}` }));
+  return within(await screen.findByRole('region', { name: 'Logger' }));
+}
+
+it('a picked Day taken off the rotation meanwhile is refused, and the logger reloads on the suggestion', async () => {
+  const { routines, sessions } = fakeTodayApi([ppl3()]);
+  const logger = await pickAndStart('Legs');
+  routines[0]!.turns = ['Push', 'Pull']; // Legs dropped elsewhere
+
+  await fill(logger, '225', '5');
+  await userEvent.click(logger.getByRole('button', { name: 'Save Set 1' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('not on the rotation');
+  expect(await screen.findByRole('heading', { name: 'Push' })).toBeInTheDocument();
+  expect(screen.queryByText(/^Suggested:/)).not.toBeInTheDocument();
+  expect(sessions).toEqual([]);
+});
+
+it('the pick is used up by the Session it started', async () => {
+  const fake = fakeTodayApi([ppl3()]);
+  const logger = await pickAndStart('Legs');
+  await fill(logger, '225', '5');
+  await userEvent.click(logger.getByRole('button', { name: 'Save Set 1' }));
+  await logger.findByRole('button', { name: 'Save Set 2' });
+
+  await userEvent.click(logger.getByRole('button', { name: 'Delete Session…' }));
+  await userEvent.click(within(logger.getByRole('group', { name: 'Delete Session' })).getByRole('button', { name: 'Delete Session' }));
+  const card = within(await screen.findByRole('region', { name: /^Up next/ }));
+  expect(card.getByText('Push')).toHaveClass('suggested-day');
+  expect(card.queryByText(/^Suggested:/)).not.toBeInTheDocument();
+  expect(fake.sessions).toEqual([]);
+});
+
+it('after Change Day, Up next follows the re-pinned Turn', async () => {
+  const fake = fakeTodayApi([ppl3()]);
+  const logger = await loggedPush(fake, ['135', '5']);
+  await userEvent.click(logger.getByRole('button', { name: 'Change Day…' }));
+  await userEvent.selectOptions(logger.getByLabelText('Day'), 'Pull');
+  await userEvent.click(logger.getByRole('button', { name: 'Change' }));
+  await logger.findByRole('heading', { name: 'Pull' });
+
+  const calls = fake.fetch.mock.calls.map(([url, init]) => `${init?.method ?? 'GET'} ${url}`);
+  const changed = calls.findLastIndex((c) => c.startsWith('PUT /wolog/api/sessions/'));
+  await waitFor(() =>
+    expect(fake.fetch.mock.calls.slice(changed + 1).map(([url]) => url)).toContain('/wolog/api/up-next'),
+  );
+});

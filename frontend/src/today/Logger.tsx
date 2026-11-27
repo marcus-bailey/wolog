@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { messageOf } from '../api';
 import { shownDate } from '../dates';
 import { listExercises, type Exercise } from '../exercises/api';
-import type { Day } from '../routines/api';
+import { getRoutine, type Day } from '../routines/api';
 import type { SavedSet, Session, SetValues } from '../sessions/api';
 import type { Suggestion } from './api';
 
@@ -37,6 +37,8 @@ export interface LoggerActions {
   /** Remove a Line that has no Sets. */
   removeLine: (lineIndex: number) => Promise<boolean>;
   deleteSession: () => Promise<boolean>;
+  /** Change-Day: relabel the Session to another Day of its Routine. */
+  changeDay: (dayId: number) => Promise<boolean>;
   changeDate: (date: string) => void;
   close: () => void;
 }
@@ -199,6 +201,69 @@ function SetSheet({
   );
 }
 
+/** Change-Day: every Day still belonging to the Session's Routine, on or off the rotation. */
+function ChangeDay({
+  session,
+  busy,
+  onChange,
+  onCancel,
+}: {
+  session: Session;
+  busy: boolean;
+  onChange: (dayId: number) => void;
+  onCancel: () => void;
+}) {
+  const [days, setDays] = useState<{ id: number; name: string }[] | null>(null);
+  const [dayId, setDayId] = useState(session.day.id);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    getRoutine(session.routine.id).then(
+      (r) => current && setDays(r.days),
+      (e: unknown) => current && setLoadError(messageOf(e)),
+    );
+    return () => {
+      current = false;
+    };
+  }, [session.routine.id]);
+
+  return (
+    <form
+      className="add-line"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onChange(dayId);
+      }}
+    >
+      {loadError ? (
+        <p className="refusal">{loadError}</p>
+      ) : !days ? (
+        <p className="quiet">Loading…</p>
+      ) : (
+        <>
+          <label htmlFor="change-day">Day</label>
+          <select id="change-day" value={dayId} onChange={(e) => setDayId(Number(e.target.value))}>
+            {days.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+          <p className="quiet">Lines and Sets stay as they are.</p>
+        </>
+      )}
+      <div className="row actions">
+        <button type="submit" disabled={busy || !days || dayId === session.day.id}>
+          Change
+        </button>
+        <button type="button" className="secondary" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
 /** + Line: type a name; a live Exercise's name attaches it, a new one creates it. Pickers hide Retired. */
 function AddLine({ busy, onAdd, onCancel }: { busy: boolean; onAdd: (name: string) => void; onCancel: () => void }) {
   const [name, setName] = useState('');
@@ -273,6 +338,7 @@ export function Logger({
   const [editing, setEditing] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [changingDay, setChangingDay] = useState(false);
 
   const index = Math.min(current, Math.max(0, lines.length - 1));
   const line = lines[index];
@@ -311,6 +377,9 @@ export function Logger({
       <header className="logger-head">
         <p className="eyebrow">{routine.name}</p>
         <h2 className="logger-day">{dayName}</h2>
+        {logging.kind === 'draft' && logging.day.id !== logging.suggestion.day_id && (
+          <p className="quiet">Suggested: {logging.suggestion.day_name}</p>
+        )}
         {logging.kind === 'draft' ? (
           <div className="row logger-date">
             <label htmlFor="logger-date">Date</label>
@@ -329,12 +398,23 @@ export function Logger({
         ) : (
           <div className="row logger-date">
             <p className="quiet">{date === today ? 'Today' : shownDate(date, today)}</p>
+            <button type="button" className="secondary" aria-expanded={changingDay} onClick={() => setChangingDay(!changingDay)}>
+              Change Day…
+            </button>
             {date !== today && (
               <button type="button" className="secondary" onClick={actions.close}>
                 Back to today
               </button>
             )}
           </div>
+        )}
+        {logging.kind === 'session' && changingDay && (
+          <ChangeDay
+            session={logging.session}
+            busy={busy}
+            onChange={(dayId) => void actions.changeDay(dayId).then((ok) => ok && setChangingDay(false))}
+            onCancel={() => setChangingDay(false)}
+          />
         )}
       </header>
 

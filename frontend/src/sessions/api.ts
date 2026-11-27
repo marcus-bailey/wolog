@@ -106,6 +106,8 @@ export async function createSession(body: {
   date: string;
   routineId: number;
   turnId: number;
+  /** The Day picked instead of the suggested one (Pick another Day), if any. */
+  dayId?: number;
   dayLines: number[];
   lines: NewLine[];
 }): Promise<Session> {
@@ -115,6 +117,7 @@ export async function createSession(body: {
       today: localToday(),
       routine_id: body.routineId,
       turn_id: body.turnId,
+      ...(body.dayId === undefined ? {} : { day_id: body.dayId }),
       day_lines: body.dayLines,
       lines: body.lines,
     }),
@@ -125,10 +128,15 @@ export async function createSession(body: {
  * Make the Session's Lines and Sets these, from the version the screen shows. Null means no Set was
  * left, so the Session is gone. Refused if it changed meanwhile (`session_changed`), a Set moved
  * Lines (`set_moved`), a removed Line has Sets (`line_has_sets`), or a new Line names a Retired
- * Exercise (`name_retired`).
+ * Exercise (`name_retired`). `dayId` changes the Session's Day (Change-Day): a relabel, re-pinning
+ * its Turn; Lines and Sets are as given.
  */
-export async function writeSession(session: Session, lines: LineWrite[]): Promise<Session | null> {
-  const body = await request('PUT', `sessions/${session.id}`, { version: session.version, lines });
+export async function writeSession(session: Session, lines: LineWrite[], dayId?: number): Promise<Session | null> {
+  const body = await request('PUT', `sessions/${session.id}`, {
+    version: session.version,
+    ...(dayId === undefined ? {} : { day_id: dayId }),
+    lines,
+  });
   return body === null ? null : expectSession(body);
 }
 
