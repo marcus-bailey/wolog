@@ -47,13 +47,16 @@ docker compose up -d postgres
 (cd frontend && npm test)
 ```
 
+The frontend's layout tests (`*.browser.test.tsx`: every screen fits a phone's width) run in Chromium. Install it once with `(cd frontend && npx playwright install chromium)`.
+
 | Where      | Command                                          | What it does                                   |
 | ---------- | ------------------------------------------------ | ---------------------------------------------- |
 | `backend`  | `uv run pytest`                                  | API tests (set `TEST_DATABASE_URL` to change DB) |
 | `backend`  | `uv run ruff check . && uv run ruff format .`    | Lint and format                                |
 | `backend`  | `uv run mypy`                                    | Type check (strict)                            |
 | `backend`  | `uv run alembic revision -m "…"`                 | New migration in `migrations/versions/`        |
-| `frontend` | `npm test`                                       | Unit and component tests (Vitest)              |
+| `frontend` | `npm test`                                       | Unit and component tests (Vitest), and layout tests in Chromium |
+| `frontend` | `npx vitest run --project unit`                  | Just the unit and component tests (no browser) |
 | `frontend` | `npm run lint` / `npm run typecheck`             | ESLint / TypeScript (strict, no implicit `any`)|
 | `frontend` | `npm run build`                                  | Production build for `/wolog/`                 |
 
