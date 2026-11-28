@@ -559,9 +559,10 @@ export function Logger({
             type="button"
             className="chip"
             aria-current={i === index ? 'true' : undefined}
+            title={l.name}
             onClick={() => goTo(i)}
           >
-            {l.name} <span className="count">{l.sets.length}</span>
+            <span className="chip-name">{l.name}</span> <span className="count">{l.sets.length}</span>
           </button>
         ))}
         <button type="button" className="chip add" aria-expanded={adding} onClick={() => setAdding(!adding)}>

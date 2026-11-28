@@ -11,3 +11,6 @@ __pycache__/
 node_modules/
 dist/
 *.tsbuildinfo
+# Vitest browser mode's failure screenshots
+__screenshots__/
+.vitest-attachments/
