@@ -155,6 +155,7 @@ Drills passed:
 
 | Date | Postgres | Backup stamp | Latest Session |
 | ---- | -------- | ------------ | -------------- |
+| 2026-11-28 | 17.12 | `2026-11-28T0610` | id 1, 2026-11-28 |
 
 ## Dependencies
 
