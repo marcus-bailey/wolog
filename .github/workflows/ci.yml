@@ -49,3 +49,61 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+
+  # Builds both production images and pushes them to GitHub's container registry (private, like
+  # the repo) for the AWS server, tagged sha-<first 7 of the commit>. deploy/aws/deploy.sh pulls a
+  # commit's tag. Pull requests build without pushing: only main's commits are deployed, and
+  # pruning then keeps the newest 20 of them to roll back to.
+  docker:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUSH: ${{ github.event_name == 'push' }}
+    strategy:
+      matrix:
+        app: [frontend, backend]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: env.PUSH == 'true'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: tags
+        run: echo "list=ghcr.io/marcus-bailey/wolog-${{ matrix.app }}:sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./${{ matrix.app }}
+          target: production
+          platforms: linux/amd64
+          # One plain image per tag: attestations would add untagged versions that pruning could
+          # delete out from under a tag.
+          provenance: false
+          sbom: false
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ steps.tags.outputs.list }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+  # Keeps the registry small: the newest 20 versions of each image (plenty to roll back to).
+  prune-images:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: [docker]
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        app: [frontend, backend]
+    steps:
+      - uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: wolog-${{ matrix.app }}
+          package-type: container
+          min-versions-to-keep: 20
